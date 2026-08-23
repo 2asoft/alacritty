@@ -711,11 +711,26 @@ impl<T> Term<T> {
     {
         match processed {
             ProcessedCommand::Decoded { command, image } => {
-                let result = self.graphics.store(&command, image);
-                self.graphics_response(&command, result.map(|outcome| outcome.image_id));
+                let result = self.graphics.store(&command, image).and_then(|outcome| {
+                    if command.action == Some(GraphicsAction::TransmitAndPlace) {
+                        self.graphics.place_handle(
+                            outcome.handle,
+                            &command,
+                            self.grid.cursor.point,
+                        )?;
+                    }
+                    Ok(outcome.image_id)
+                });
+                self.graphics_response(&command, result);
             },
             ProcessedCommand::Metadata(command) => {
-                if command.more != Some(true) {
+                if command.action == Some(GraphicsAction::Place) {
+                    let result = self
+                        .graphics
+                        .place(&command, self.grid.cursor.point)
+                        .map(|_| std::num::NonZeroU32::new(command.image_id.unwrap_or(0)));
+                    self.graphics_response(&command, result);
+                } else if command.more != Some(true) {
                     self.graphics_response(&command, Err(GraphicsError::Unsupported));
                 }
             },

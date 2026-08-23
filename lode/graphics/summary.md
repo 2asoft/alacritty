@@ -41,7 +41,8 @@ Malformed, unsupported, oversized, exhausted, or inaccessible operations produce
 - `alacritty_terminal/src/term/mod.rs` - screen state, reset, resize, and render snapshot boundary.
 - `alacritty_terminal/src/grid/resize.rs` - primary-buffer reflow implementation.
 - `alacritty/src/display/mod.rs` - terminal snapshot and unlocked GPU-render boundary.
-- `alacritty/src/renderer/` - OpenGL renderer facilities.
+- `alacritty/src/renderer/image.rs` - RGBA texture cache and image quad renderer.
+- `alacritty/src/display/mod.rs` - placement-to-framebuffer geometry and render ordering.
 - `alacritty/src/config/terminal.rs` - terminal configuration table.
 
 ## Related

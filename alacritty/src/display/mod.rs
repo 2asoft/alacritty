@@ -53,7 +53,7 @@ use crate::display::window::Window;
 use crate::event::{Event, EventType, Mouse, SearchState};
 use crate::message_bar::{MessageBuffer, MessageType};
 use crate::renderer::rects::{RenderLine, RenderLines, RenderRect};
-use crate::renderer::{self, GlyphCache, Renderer, platform};
+use crate::renderer::{self, GlyphCache, RenderableImage, Renderer, platform};
 use crate::scheduler::{Scheduler, TimerId, Topic};
 use crate::string::{ShortenDirection, StrShortener};
 
@@ -78,6 +78,30 @@ const SHORTENER: char = '…';
 
 /// Color which is used to highlight damaged rects when debugging.
 const DAMAGE_RECT_COLOR: Rgb = Rgb::new(255, 0, 255);
+
+fn classic_dimensions(
+    source: (u32, u32),
+    cells: (Option<u32>, Option<u32>),
+    cell: (f32, f32),
+    offset: (u32, u32),
+) -> (f32, f32) {
+    let x_offset = (offset.0 as f32).min((cell.0 - 1.).max(0.));
+    let y_offset = (offset.1 as f32).min((cell.1 - 1.).max(0.));
+    match cells {
+        (Some(columns), Some(rows)) => {
+            (columns as f32 * cell.0 - x_offset, rows as f32 * cell.1 - y_offset)
+        },
+        (Some(columns), None) => {
+            let width = columns as f32 * cell.0 - x_offset;
+            (width, width * source.1 as f32 / source.0 as f32)
+        },
+        (None, Some(rows)) => {
+            let height = rows as f32 * cell.1 - y_offset;
+            (height * source.0 as f32 / source.1 as f32, height)
+        },
+        (None, None) => (source.0 as f32, source.1 as f32),
+    }
+}
 
 #[derive(Debug)]
 pub enum Error {
@@ -412,7 +436,7 @@ impl Display {
         let rasterizer = Rasterizer::new()?;
 
         let font_size = config.font.size().scale(scale_factor);
-        debug!("Loading \"{}\" font", &config.font.normal().family);
+        debug!("Loading \"{}\" font", config.font.normal().family);
         let font = config.font.clone().with_size(font_size);
         let mut glyph_cache = GlyphCache::new(rasterizer, &font)?;
 
@@ -792,10 +816,60 @@ impl Display {
         let display_offset = content.display_offset();
         let cursor = content.cursor();
 
+        let size_info = self.size_info;
+        let graphics: Vec<_> = terminal
+            .graphics()
+            .renderables()
+            .into_iter()
+            .filter_map(|graphic| {
+                let point = term::point_to_viewport(display_offset, graphic.anchor)?;
+                let image_width = graphic.pixels.width();
+                let image_height = graphic.pixels.height();
+                let source_x = graphic.source_x.min(image_width);
+                let source_y = graphic.source_y.min(image_height);
+                let source_width = graphic
+                    .source_width
+                    .unwrap_or(image_width - source_x)
+                    .min(image_width - source_x);
+                let source_height = graphic
+                    .source_height
+                    .unwrap_or(image_height - source_y)
+                    .min(image_height - source_y);
+                if source_width == 0 || source_height == 0 {
+                    return None;
+                }
+
+                let cell_width = size_info.cell_width();
+                let cell_height = size_info.cell_height();
+                let (width, height) = classic_dimensions(
+                    (source_width, source_height),
+                    (graphic.columns, graphic.rows),
+                    (cell_width, cell_height),
+                    (graphic.x_offset, graphic.y_offset),
+                );
+                Some(RenderableImage {
+                    image: graphic.image,
+                    content_generation: graphic.content_generation,
+                    pixels: graphic.pixels,
+                    x: size_info.padding_x()
+                        + point.column.0 as f32 * cell_width
+                        + graphic.x_offset as f32,
+                    y: size_info.padding_y()
+                        + point.line as f32 * cell_height
+                        + graphic.y_offset as f32,
+                    width,
+                    height,
+                    source_x,
+                    source_y,
+                    source_width,
+                    source_height,
+                })
+            })
+            .collect();
+
         let cursor_point = terminal.grid().cursor.point;
         let total_lines = terminal.grid().total_lines();
         let metrics = self.glyph_cache.font_metrics();
-        let size_info = self.size_info;
 
         let vi_mode = terminal.mode().contains(TermMode::VI);
         let vi_cursor_point = if vi_mode { Some(terminal.vi_mode_cursor.point) } else { None };
@@ -877,6 +951,8 @@ impl Display {
             });
             self.renderer.draw_cells(&size_info, glyph_cache, cells);
         }
+
+        self.renderer.draw_images(&size_info, &graphics);
 
         let mut rects = lines.rects(&metrics, &size_info);
 
@@ -1631,4 +1707,26 @@ fn window_size(
     let height = (padding.1).mul_add(2., grid_height).floor();
 
     PhysicalSize::new(width as u32, height as u32)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classic_dimensions_preserve_native_pixels_and_inferred_aspect() {
+        assert_eq!(classic_dimensions((3, 2), (None, None), (10., 20.), (0, 0)), (3., 2.));
+        assert_eq!(classic_dimensions((100, 50), (Some(5), None), (10., 20.), (0, 0)), (50., 25.));
+        assert_eq!(classic_dimensions((100, 50), (None, Some(2)), (10., 20.), (0, 0)), (80., 40.));
+        assert_eq!(
+            classic_dimensions((100, 50), (Some(5), Some(2)), (10., 20.), (0, 0)),
+            (50., 40.)
+        );
+        assert_eq!(classic_dimensions((100, 50), (Some(5), None), (10., 20.), (2, 0)), (48., 24.));
+        assert_eq!(classic_dimensions((100, 50), (None, Some(2)), (10., 20.), (0, 2)), (76., 38.));
+        assert_eq!(
+            classic_dimensions((100, 50), (Some(5), Some(2)), (10., 20.), (2, 2)),
+            (48., 38.)
+        );
+    }
 }

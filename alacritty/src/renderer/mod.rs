@@ -23,13 +23,16 @@ use crate::gl;
 use crate::renderer::rects::{RectRenderer, RenderRect};
 use crate::renderer::shader::ShaderError;
 
+mod image;
 pub mod platform;
 pub mod rects;
 mod shader;
 mod text;
 
+pub use image::RenderableImage;
 pub use text::{GlyphCache, LoaderApi};
 
+use image::ImageRenderer;
 use shader::ShaderVersion;
 use text::{Gles2Renderer, Glsl3Renderer, TextRenderer};
 
@@ -89,6 +92,7 @@ enum TextRendererProvider {
 pub struct Renderer {
     text_renderer: TextRendererProvider,
     rect_renderer: RectRenderer,
+    image_renderer: ImageRenderer,
     robustness: bool,
 }
 
@@ -150,6 +154,7 @@ impl Renderer {
             None => (shader_version.as_ref() >= "3.3" && !is_gles_context, true),
         };
 
+        let shader_version = if use_glsl3 { ShaderVersion::Glsl3 } else { ShaderVersion::Gles2 };
         let (text_renderer, rect_renderer) = if use_glsl3 {
             let text_renderer = TextRendererProvider::Glsl3(Glsl3Renderer::new()?);
             let rect_renderer = RectRenderer::new(ShaderVersion::Glsl3)?;
@@ -171,7 +176,12 @@ impl Renderer {
             }
         }
 
-        Ok(Self { text_renderer, rect_renderer, robustness })
+        let image_renderer = ImageRenderer::new(shader_version)?;
+        Ok(Self { text_renderer, rect_renderer, image_renderer, robustness })
+    }
+
+    pub fn draw_images(&mut self, size_info: &SizeInfo, images: &[RenderableImage]) {
+        self.image_renderer.draw(size_info.width(), size_info.height(), images);
     }
 
     pub fn draw_cells<I: Iterator<Item = RenderableCell>>(

@@ -11,7 +11,8 @@ Implement the complete Kitty terminal graphics protocol described by the accepte
 - Base revision is `7dd7b5b0` on `aasoft/kitty`.
 - The workspace now carries a local `vte` 0.15.0 fork. APC has its own streaming callback state; PM and SOS remain ignored.
 - `alacritty_terminal` parses bounded Kitty APC data into typed commands. The PTY loop retains the suffix at a graphics barrier, decodes direct RGB, RGBA, PNG, and zlib data outside `Term`'s mutex, commits in order, and preserves query-response ordering. Chunked and local-object transfers remain pending.
-- Per-screen image storage uses private monotonic handles, external ID indexes, deterministic image-number lookup, atomic ID replacement, a decoded-byte limit, and deterministic oldest-first eviction. Placements are not implemented yet.
+- Per-screen image storage uses private monotonic handles, external ID indexes, deterministic image-number lookup, atomic ID replacement, a decoded-byte limit, and deterministic oldest-first eviction.
+- Basic classic transmit-and-place and place-existing commands create independent placements. The OpenGL renderer caches textures and draws crop/scaled RGBA content. Scrolling, reflow tracking, protocol z strata, texture tiling, deletion, and cache budgets remain pending.
 - Primary grid width changes reflow cells in `alacritty_terminal/src/grid/resize.rs`; no external points participate.
 - Terminal renderable state is collected under lock, while OpenGL work occurs after lock release.
 - No graphics state, graphics configuration, image renderer, or local graphics transport exists.

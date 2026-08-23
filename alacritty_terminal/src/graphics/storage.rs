@@ -1,7 +1,12 @@
 use std::collections::HashMap;
 use std::num::NonZeroU32;
 
-use super::{Action, Command, GraphicsError, PixelBuffer};
+use crate::index::Point;
+
+use super::{
+    Action, Command, GraphicsError, PixelBuffer, Placement, PlacementHandle, Placements,
+    RenderableGraphic,
+};
 
 pub const MAX_IMAGES_PER_BUFFER: usize = 4096;
 
@@ -51,6 +56,7 @@ pub struct StoreOutcome {
 pub struct GraphicsState {
     images: HashMap<ImageHandle, Image>,
     image_ids: HashMap<NonZeroU32, ImageHandle>,
+    placements: Placements,
     used_bytes: usize,
     storage_limit: usize,
     next_handle: u64,
@@ -64,6 +70,7 @@ impl GraphicsState {
             storage_limit,
             images: Default::default(),
             image_ids: Default::default(),
+            placements: Default::default(),
             used_bytes: 0,
             next_handle: 1,
             next_image_id: 1,
@@ -83,6 +90,70 @@ impl GraphicsState {
         self.image_ids.get(&id).and_then(|handle| self.images.get(handle))
     }
 
+    pub fn placements(&self) -> impl Iterator<Item = &Placement> {
+        self.placements.values()
+    }
+
+    pub fn renderables(&self) -> Vec<RenderableGraphic> {
+        let mut renderables: Vec<_> = self
+            .placements
+            .values()
+            .filter_map(|placement| {
+                let image = self.images.get(&placement.image)?;
+                Some(RenderableGraphic {
+                    image: image.handle,
+                    pixels: image.pixels.clone(),
+                    anchor: placement.anchor,
+                    source_x: placement.source_x,
+                    source_y: placement.source_y,
+                    source_width: placement.source_width,
+                    source_height: placement.source_height,
+                    x_offset: placement.x_offset,
+                    y_offset: placement.y_offset,
+                    columns: placement.columns,
+                    rows: placement.rows,
+                    z_index: placement.z_index,
+                    content_generation: image.content_generation,
+                    creation_serial: placement.creation_serial,
+                })
+            })
+            .collect();
+        renderables.sort_by_key(|graphic| {
+            let image_id = self
+                .images
+                .get(&graphic.image)
+                .and_then(|image| image.external_id)
+                .map_or(0, NonZeroU32::get);
+            (graphic.z_index, image_id, graphic.creation_serial)
+        });
+        renderables
+    }
+
+    pub fn place(
+        &mut self,
+        command: &Command,
+        anchor: Point,
+    ) -> Result<PlacementHandle, GraphicsError> {
+        let image = match NonZeroU32::new(command.image_id.unwrap_or(0)) {
+            Some(id) => self.image_by_id(id),
+            None => command.image_number.and_then(|number| self.newest_by_number(number)),
+        }
+        .ok_or(GraphicsError::NotFound)?;
+        let handle = image.handle;
+        let image_id = image.external_id;
+        self.placements.insert(handle, image_id, command, anchor)
+    }
+
+    pub fn place_handle(
+        &mut self,
+        handle: ImageHandle,
+        command: &Command,
+        anchor: Point,
+    ) -> Result<PlacementHandle, GraphicsError> {
+        let image_id = self.images.get(&handle).ok_or(GraphicsError::NotFound)?.external_id;
+        self.placements.insert(handle, image_id, command, anchor)
+    }
+
     pub fn newest_by_number(&self, number: u32) -> Option<&Image> {
         self.images
             .values()
@@ -93,6 +164,7 @@ impl GraphicsState {
     pub fn clear(&mut self) {
         self.images.clear();
         self.image_ids.clear();
+        self.placements.clear();
         self.used_bytes = 0;
     }
 
@@ -209,6 +281,7 @@ impl GraphicsState {
 
     fn remove(&mut self, handle: ImageHandle) {
         if let Some(image) = self.images.remove(&handle) {
+            self.placements.remove_image(handle);
             self.used_bytes -= image.pixels.storage_bytes();
             if let Some(id) = image.external_id {
                 self.image_ids.remove(&id);
