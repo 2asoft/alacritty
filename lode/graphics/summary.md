@@ -31,6 +31,7 @@ Malformed, unsupported, oversized, exhausted, or inaccessible operations produce
 
 ## Anchors
 
+- `vte/src/lib.rs` - generic streaming APC recognition and cancellation callbacks.
 - `alacritty_terminal/src/event_loop.rs` - PTY parser lock and ordering boundary.
 - `alacritty_terminal/src/term/mod.rs` - screen state, reset, resize, and render snapshot boundary.
 - `alacritty_terminal/src/grid/resize.rs` - primary-buffer reflow implementation.
