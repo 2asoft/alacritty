@@ -244,11 +244,37 @@ impl ImageRenderer {
             return;
         }
 
+        let mut previous_active_texture = 0;
+        let mut previous_texture = 0;
+        let mut previous_program = 0;
+        let mut previous_vao = 0;
+        let mut previous_array_buffer = 0;
+        let mut previous_blend_source_rgb = 0;
+        let mut previous_blend_destination_rgb = 0;
+        let mut previous_blend_source_alpha = 0;
+        let mut previous_blend_destination_alpha = 0;
+        let mut previous_viewport = [0; 4];
         // SAFETY: All GL names are owned by this renderer and a current context is established by
         // `Display::draw`. Uploaded slices remain alive for each call consuming their pointers.
+        let blend_was_enabled = unsafe {
+            let enabled = gl::IsEnabled(gl::BLEND) == gl::TRUE;
+            gl::GetIntegerv(gl::ACTIVE_TEXTURE, &mut previous_active_texture);
+            gl::ActiveTexture(gl::TEXTURE0);
+            gl::GetIntegerv(gl::TEXTURE_BINDING_2D, &mut previous_texture);
+            gl::GetIntegerv(gl::CURRENT_PROGRAM, &mut previous_program);
+            gl::GetIntegerv(gl::VERTEX_ARRAY_BINDING, &mut previous_vao);
+            gl::GetIntegerv(gl::ARRAY_BUFFER_BINDING, &mut previous_array_buffer);
+            gl::GetIntegerv(gl::BLEND_SRC_RGB, &mut previous_blend_source_rgb);
+            gl::GetIntegerv(gl::BLEND_DST_RGB, &mut previous_blend_destination_rgb);
+            gl::GetIntegerv(gl::BLEND_SRC_ALPHA, &mut previous_blend_source_alpha);
+            gl::GetIntegerv(gl::BLEND_DST_ALPHA, &mut previous_blend_destination_alpha);
+            gl::GetIntegerv(gl::VIEWPORT, previous_viewport.as_mut_ptr());
+            enabled
+        };
         unsafe {
             gl::Enable(gl::SCISSOR_TEST);
             gl::Scissor(scissor[0], scissor[1], scissor[2], scissor[3]);
+            gl::Viewport(0, 0, viewport.width as i32, viewport.height as i32);
             gl::UseProgram(self.program.id());
             gl::Uniform1i(self.texture_uniform, 0);
             gl::ActiveTexture(gl::TEXTURE0);
@@ -297,15 +323,23 @@ impl ImageRenderer {
             }
         }
 
-        // SAFETY: Resetting bindings does not invalidate renderer-owned objects.
+        // SAFETY: Restoring the captured state, including viewport, keeps other renderers' binding
+        // caches coherent.
         unsafe {
-            gl::BindTexture(gl::TEXTURE_2D, 0);
-            gl::BindBuffer(gl::ARRAY_BUFFER, 0);
-            gl::BindVertexArray(0);
-            gl::UseProgram(0);
-            // Text rendering relies on dual-source blending and does not reset this state before
-            // every batch. Restore the renderer's regular blend function after image composition.
-            gl::BlendFunc(gl::SRC1_COLOR, gl::ONE_MINUS_SRC1_COLOR);
+            gl::BindTexture(gl::TEXTURE_2D, previous_texture as GLuint);
+            gl::ActiveTexture(previous_active_texture as GLenum);
+            gl::BindVertexArray(previous_vao as GLuint);
+            gl::BindBuffer(gl::ARRAY_BUFFER, previous_array_buffer as GLuint);
+            gl::UseProgram(previous_program as GLuint);
+            gl::BlendFuncSeparate(
+                previous_blend_source_rgb as GLenum,
+                previous_blend_destination_rgb as GLenum,
+                previous_blend_source_alpha as GLenum,
+                previous_blend_destination_alpha as GLenum,
+            );
+            if !blend_was_enabled {
+                gl::Disable(gl::BLEND);
+            }
             gl::Scissor(
                 previous_scissor[0],
                 previous_scissor[1],
@@ -315,6 +349,12 @@ impl ImageRenderer {
             if !scissor_was_enabled {
                 gl::Disable(gl::SCISSOR_TEST);
             }
+            gl::Viewport(
+                previous_viewport[0],
+                previous_viewport[1],
+                previous_viewport[2],
+                previous_viewport[3],
+            );
         }
     }
 

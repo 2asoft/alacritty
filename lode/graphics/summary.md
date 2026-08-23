@@ -26,7 +26,7 @@ Kitty graphics support spans generic APC recognition, terminal protocol and imag
 - Relative placement graphs are acyclic, depth-bounded, and free of dangling parents.
 - Image replacement is atomic.
 - Dropping every GPU texture does not change terminal semantics.
-- Every image pass restores the regular text blend function before a later text batch or frame.
+- Every image pass restores shared OpenGL bindings, active texture, blend state, and scissor state before a later text batch or frame so renderer-local state caches remain coherent.
 - Graphics state never crosses primary and alternate screen ownership.
 - APC and command parser memory remains bounded for malformed or incomplete input.
 
@@ -40,7 +40,7 @@ Malformed, unsupported, oversized, exhausted, or inaccessible operations produce
 - `alacritty_terminal/src/event_loop.rs` - retained input suffix, unlocked decode, and ordered commit boundary.
 - `alacritty_terminal/src/graphics/` - typed commands, bounded canonical decoding, per-screen image storage, relative placement graphs, and Unicode placeholder decoding.
 - `scripts/generate-kitty-diacritics.py` - authoritative placeholder row/column table regeneration.
-- `scripts/kitty-graphics-smoke.sh` - isolated headless-Sway screenshot and repeated-redraw text stability validation.
+- `scripts/kitty-graphics-smoke.sh` - isolated headless-Sway semantic framebuffer and repeated-redraw validation, including text composited above a negative-z image.
 - `scripts/kitty-graphics-benchmark.sh` - release-mode ordinary-text parser comparison with graphics disabled and enabled.
 - `fuzz/fuzz_targets/kitty_stream.rs` - bounded stateful PTY/parser/decoder/grid fuzz target.
 - `alacritty_terminal/src/term/mod.rs` - screen state, reset, resize, and render snapshot boundary.

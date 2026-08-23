@@ -41,7 +41,7 @@ Implement the complete Kitty terminal graphics protocol described by the accepte
 8. [x] Implement Unicode placeholders from authoritative generated combining-mark data.
 9. [x] Implement relative placement graph semantics.
 10. [x] Implement animation frame loading, composition, control, deletion, and deadline scheduling.
-11. [ ] Complete hostile-input, property, fuzz, renderer-golden, context-loss, and performance validation; enable by default after manual UX acceptance. Stateful stream fuzzing (10,000 instrumented libFuzzer runs with no findings) and an isolated semantic-framebuffer/repeated-redraw screenshot smoke harness that discards and reconstructs image textures every pass are in place. A fresh 10-run release benchmark measured the graphics-enabled ordinary-text parser at 0.962x the disabled baseline (no regression).
+11. [ ] Complete hostile-input, property, fuzz, renderer-golden, context-loss, and performance validation; enable by default after manual UX acceptance. Stateful stream fuzzing (10,000 instrumented libFuzzer runs with no findings) and an isolated semantic-framebuffer/repeated-redraw screenshot smoke harness that discards and reconstructs image textures every pass and checks text composited above negative-z images are in place. A fresh 10-run release benchmark measured the graphics-enabled ordinary-text parser at 0.962x the disabled baseline (no regression).
 
 Each goal stops only after its focused tests, adjacent suites, formatting, linting, docs, and Lode state pass. Commit verified coherent increments separately.
 

@@ -29,7 +29,7 @@ pixel = base64.b64encode(bytes([255, 0, 0, 255])).decode("ascii")
 script = (
     "printf 'Thin text must remain stable across redraws\\nSecond line 0123456789'; "
     f"printf '\\033_Ga=t,q=2,f=32,s=1,v=1,i=1;{pixel}\\033\\\\'; "
-    "printf '\\033[5;1H\\033_Ga=p,q=2,i=1,c=4,r=4,C=1\\033\\\\\\033[20;20H'; "
+    "printf '\\033[5;1H\\033_Ga=p,q=2,i=1,c=4,r=4,z=-1,C=1\\033\\\\\\033[20;20H'; "
     "sleep 30"
 )
 quoted = '"' + script.replace('\\', '\\\\').replace('"', '\\"') + '"'
@@ -90,6 +90,13 @@ for frame in 1 2 3 4; do
     magick "$output/frame-$frame.png" -crop 600x70+0+25 +repage "$output/text-$frame.png"
     sleep 0.6
 done
+
+text_pixels=$(magick "$output/text-1.png" -format %c histogram:info:- \
+    | awk '/#D8D8D8 / { gsub(":", "", $1); print $1 }')
+[ "${text_pixels:-0}" -ge 40 ] || {
+    echo "expected text above negative-z image was missing from framebuffer" >&2
+    exit 1
+}
 
 red_pixels=$(magick "$output/frame-1.png" -format %c histogram:info:- \
     | awk '/#FF0000 / { gsub(":", "", $1); print $1 }')
