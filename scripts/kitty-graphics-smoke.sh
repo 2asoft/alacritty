@@ -91,6 +91,13 @@ for frame in 1 2 3 4; do
     sleep 0.6
 done
 
+red_pixels=$(magick "$output/frame-1.png" -format %c histogram:info:- \
+    | awk '/#FF0000 / { gsub(":", "", $1); print $1 }')
+[ "${red_pixels:-0}" -ge 500 ] || {
+    echo "expected rendered red image was missing from framebuffer" >&2
+    exit 1
+}
+
 for frame in 2 3 4; do
     changed=$(magick compare -metric AE "$output/text-1.png" "$output/text-$frame.png" null: 2>&1 || true)
     [ "$changed" = "0 (0)" ] || {
