@@ -1,6 +1,6 @@
 # Kitty graphics implementation plan
 
-Status: active external conformance hardening
+Status: validating external conformance and final default
 
 ## Outcome and acceptance
 
@@ -34,8 +34,8 @@ Implement the complete Kitty terminal graphics protocol described by the accepte
 1. [x] Add fixtures and protocol-state test infrastructure.
 2. [x] Expose bounded streaming APC callbacks through a pinned `vte` fork and cover termination/cancellation splits.
 3. [x] Add ordered partial parser consumption and deferred transaction barriers.
-4. [ ] Implement typed command parsing, direct RGB/RGBA/PNG/zlib transfer, IDs, queries, and quotas. Kitty-compatible transport errors, permissive flag values, and smallest-free number IDs now pass external scenarios.
-5. [ ] Implement classic placements, deletion, tracked anchors, scroll/reflow, screen ownership, and reset semantics. Pixel-offset spans now pass; external conformance still requires complete selector edge cases and RIS scrollback behavior.
+4. [x] Implement typed command parsing, direct RGB/RGBA/PNG/zlib transfer, IDs, queries, quotas, Kitty-compatible transport errors, permissive flag values, and smallest-free number IDs.
+5. [x] Implement classic placements, deletion, tracked anchors, scroll/reflow, screen ownership, reset semantics, pixel-offset spans, and the full selector matrix.
 6. [x] Add layered OpenGL image rendering, alpha/crop/scale, tiling, cache eviction, and context recovery.
 7. [x] Add bounded regular-file, temporary-file, and shared-memory transports behind configuration.
 8. [x] Implement Unicode placeholders from authoritative generated combining-mark data, including fit-and-center virtual-box geometry.

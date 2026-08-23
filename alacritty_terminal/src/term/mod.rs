@@ -806,7 +806,9 @@ impl<T> Term<T> {
             };
         }
 
-        if command.more == Some(true) {
+        if command.more == Some(true)
+            && command.transmission.unwrap_or_default() == crate::graphics::Transmission::Direct
+        {
             match PendingTransmission::start(command, encoded_limit) {
                 Ok(pending) => self.pending_graphics_transmission = Some(pending),
                 Err(error) => return Some(GraphicsRequest::Command(Err(error))),
@@ -842,6 +844,7 @@ impl<T> Term<T> {
         T: EventListener,
     {
         self.graphics_processing = false;
+        self.graphics.set_visible_lines(self.screen_lines());
         if std::mem::take(&mut self.cancel_graphics_processing) {
             self.deferred_graphics_anchor = None;
             return;
@@ -3223,6 +3226,24 @@ mod tests {
             term.advance_graphics_cursor(&command, (3, 2));
             assert_eq!(term.grid.cursor.point, Point::new(Line(1), Column(1)));
         }
+    }
+
+    #[test]
+    fn kitty_non_direct_transmission_ignores_chunk_flag() {
+        let size = TermSize::new(5, 10);
+        let config = Config {
+            graphics: GraphicsConfig { enabled: true, ..Default::default() },
+            ..Default::default()
+        };
+        let mut term = Term::new(config, &size, VoidListener);
+        let mut parser = ansi::Processor::<ansi::StdSyncHandler>::new();
+        let input = b"\x1b_Gt=f,m=1,i=1;L3RtcC9pbWFnZQ==\x1b\\";
+        let _consumed = parser.advance_until_terminated(&mut term, input);
+
+        assert!(matches!(
+            term.take_graphics_request(),
+            Some(crate::graphics::GraphicsRequest::Command(Ok(_)))
+        ));
     }
 
     #[test]

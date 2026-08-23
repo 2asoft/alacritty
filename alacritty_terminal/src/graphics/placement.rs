@@ -264,6 +264,24 @@ impl Placements {
         self.entries.values().any(|placement| placement.image == image)
     }
 
+    pub fn image_is_visible(
+        &self,
+        image: ImageHandle,
+        visible_lines: &std::ops::Range<Line>,
+    ) -> bool {
+        self.entries.values().filter(|placement| placement.image == image).any(|placement| {
+            if placement.virtual_placement {
+                return true;
+            }
+            let Some(location) = self.resolved_anchor(placement, &|_, _| None) else {
+                return true;
+            };
+            location.line < visible_lines.end
+                && i64::from(location.line.0) + i64::from(placement.cell_span.1)
+                    > i64::from(visible_lines.start.0)
+        })
+    }
+
     pub fn remove_image(&mut self, image: ImageHandle) -> Vec<ImageHandle> {
         let handles: Vec<_> = self
             .entries

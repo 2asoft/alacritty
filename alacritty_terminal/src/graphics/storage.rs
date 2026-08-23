@@ -97,6 +97,7 @@ pub struct GraphicsState {
     used_bytes: usize,
     frame_count: usize,
     storage_limit: usize,
+    visible_lines: std::ops::Range<Line>,
     serial: u64,
 }
 
@@ -109,12 +110,17 @@ impl GraphicsState {
             placements: Default::default(),
             used_bytes: 0,
             frame_count: 0,
+            visible_lines: Line(0)..Line(i32::MAX),
             serial: 0,
         }
     }
 
     pub fn used_bytes(&self) -> usize {
         self.used_bytes
+    }
+
+    pub fn set_visible_lines(&mut self, screen_lines: usize) {
+        self.visible_lines = Line(0)..Line(i32::try_from(screen_lines).unwrap_or(i32::MAX));
     }
 
     pub fn decode_limit(&self, command: &Command) -> usize {
@@ -966,11 +972,14 @@ impl GraphicsState {
                 .filter(|image| Some(image.handle) != excluded)
                 .min_by_key(|image| {
                     let placed = self.placements.image_is_placed(image.handle);
-                    let priority = match (placed, image.transient) {
-                        (false, true) => 0,
-                        (false, false) => 1,
-                        (true, true) => 2,
-                        (true, false) => 3,
+                    let visible = placed
+                        && self.placements.image_is_visible(image.handle, &self.visible_lines);
+                    let priority = match (placed, visible, image.transient) {
+                        (false, _, true) => 0,
+                        (false, _, false) => 1,
+                        (true, false, true) => 2,
+                        (true, false, false) => 3,
+                        (true, true, _) => 4,
                     };
                     (priority, image.last_used_serial, image.creation_serial, image.handle.0)
                 })
@@ -2093,6 +2102,34 @@ mod tests {
         assert!(state.image_by_id(NonZeroU32::new(1).unwrap()).is_some());
         assert!(state.image_by_id(NonZeroU32::new(3).unwrap()).is_none());
         assert_invariants(&state);
+
+        let mut state = GraphicsState::new(8);
+        state.set_visible_lines(10);
+        let visible = Command { image_id: Some(1), ..Default::default() };
+        let history = Command { image_id: Some(2), ..Default::default() };
+        state.store(&visible, pixels(1, 4)).unwrap();
+        state.place(&visible, Point::new(Line(0), crate::index::Column(0))).unwrap();
+        state.store(&history, pixels(2, 4)).unwrap();
+        state.place(&history, Point::new(Line(-2), crate::index::Column(0))).unwrap();
+        state.store(&Command { image_id: Some(3), ..Default::default() }, pixels(3, 4)).unwrap();
+        assert!(state.image_by_id(NonZeroU32::new(1).unwrap()).is_some());
+        assert!(state.image_by_id(NonZeroU32::new(2).unwrap()).is_none());
+        assert_invariants(&state);
+    }
+
+    #[test]
+    fn native_footprint_visibility_protects_partially_scrolled_image() {
+        let mut state = GraphicsState::new(12);
+        state.set_visible_lines(1);
+        let visible = Command { image_id: Some(1), ..Default::default() };
+        state.store(&visible, PixelBuffer::from_rgba(1, 2, Arc::from([255; 8]))).unwrap();
+        state.place(&visible, Point::new(Line(-1), crate::index::Column(0))).unwrap();
+        let hidden = Command { image_id: Some(2), ..Default::default() };
+        state.store(&hidden, pixels(2, 4)).unwrap();
+        state.place(&hidden, Point::new(Line(-2), crate::index::Column(0))).unwrap();
+        state.store(&Command { image_id: Some(3), ..Default::default() }, pixels(3, 4)).unwrap();
+        assert!(state.image_by_id(NonZeroU32::new(1).unwrap()).is_some());
+        assert!(state.image_by_id(NonZeroU32::new(2).unwrap()).is_none());
     }
 
     #[test]
