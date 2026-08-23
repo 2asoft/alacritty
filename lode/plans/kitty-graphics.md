@@ -1,6 +1,6 @@
 # Kitty graphics implementation plan
 
-Status: awaiting UX acceptance
+Status: active external conformance hardening
 
 ## Outcome and acceptance
 
@@ -34,16 +34,18 @@ Implement the complete Kitty terminal graphics protocol described by the accepte
 1. [x] Add fixtures and protocol-state test infrastructure.
 2. [x] Expose bounded streaming APC callbacks through a pinned `vte` fork and cover termination/cancellation splits.
 3. [x] Add ordered partial parser consumption and deferred transaction barriers.
-4. [x] Implement typed command parsing, direct RGB/RGBA/PNG/zlib transfer, IDs, queries, and quotas.
-5. [x] Implement classic placements, deletion, tracked anchors, scroll/reflow, screen ownership, and reset semantics.
+4. [ ] Implement typed command parsing, direct RGB/RGBA/PNG/zlib transfer, IDs, queries, and quotas. External conformance still requires Kitty-compatible error identities, permissive flag values, and smallest-free number IDs.
+5. [ ] Implement classic placements, deletion, tracked anchors, scroll/reflow, screen ownership, and reset semantics. External conformance still requires pixel-offset spans, complete selector edge cases, and RIS scrollback preservation.
 6. [x] Add layered OpenGL image rendering, alpha/crop/scale, tiling, cache eviction, and context recovery.
 7. [x] Add bounded regular-file, temporary-file, and shared-memory transports behind configuration.
-8. [x] Implement Unicode placeholders from authoritative generated combining-mark data.
-9. [x] Implement relative placement graph semantics.
-10. [x] Implement animation frame loading, composition, control, deletion, and deadline scheduling.
+8. [ ] Implement Unicode placeholders from authoritative generated combining-mark data. Encoding and inheritance pass; fit-and-center virtual-box geometry remains.
+9. [ ] Implement relative placement graph semantics. Graph safety passes; fallback parent selection and virtual parent placement ID zero remain.
+10. [ ] Implement animation frame loading, composition, control, deletion, and deadline scheduling. Root editing, gap preservation, frame replies, and root promotion now pass; remaining external frame edge cases are tracked in the conformance matrix.
 11. [ ] Complete hostile-input, property, fuzz, renderer-golden, context-loss, and performance validation; enable by default after manual UX acceptance. Stateful stream fuzzing (10,000 instrumented libFuzzer runs with no findings) and an isolated semantic-framebuffer/repeated-redraw screenshot smoke harness that discards and reconstructs image textures every pass, checks text composited above negative-z images, and rejects visible glyphs for transparent Unicode placeholder tiles are in place. A fresh 10-run release benchmark measured the graphics-enabled ordinary-text parser at 0.962x the disabled baseline (no regression).
 
 Each goal stops only after its focused tests, adjacent suites, formatting, linting, docs, and Lode state pass. Commit verified coherent increments separately.
+
+The source-grounded scenario matrix is [Kitty graphics conformance](../../docs/kitty-graphics-conformance.md). Its current oracles are Kitty `77630f3a6748cdf0e3675cc6b768d5dd018a5052`, Ghostty `9f0e1719dc918368367d368bfe300f59bb68b5a4`, and installed Kitty 0.48.2. The protocol remains authoritative. Tests derived from external scenarios use independent fixtures; GPL Kitty test code is not copied.
 
 ## Risks and rollback
 
