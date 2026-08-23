@@ -146,6 +146,14 @@ impl GraphicsState {
         self.placements.values()
     }
 
+    pub fn has_virtual_placements(&self) -> bool {
+        self.placements.values().any(|placement| placement.virtual_placement)
+    }
+
+    pub fn has_classic_placements(&self) -> bool {
+        self.placements.values().any(|placement| !placement.virtual_placement)
+    }
+
     pub(crate) fn tracked_anchors(&self) -> Vec<(PlacementHandle, Point)> {
         self.placements.tracked_anchors()
     }
@@ -674,6 +682,9 @@ impl GraphicsState {
     }
 
     pub fn advance_animations(&mut self, now: Instant) -> Option<Duration> {
+        if self.images.is_empty() {
+            return None;
+        }
         let placed: Vec<_> = self
             .images
             .keys()

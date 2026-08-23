@@ -17,7 +17,7 @@ Implement the complete Kitty terminal graphics protocol described by the accepte
 - Relative placements resolve classic and virtual parents, enforce an eight-link depth bound, reject missing parents and cycles atomically, follow parent movement, and cascade deletion and replacement lifetimes.
 - Animation frames load as quota-counted canonical RGBA canvases, support frame editing and alpha/overwrite composition, client-selected frames, stop/loading/run states, loop limits, frame gaps, frame deletion, and UI-scheduled playback deadlines. Broader animation corpus and stress validation remain pending.
 - Primary grid width changes reflow cells in `alacritty_terminal/src/grid/resize.rs`; no external points participate.
-- Terminal renderable state is collected under lock, while OpenGL work occurs after lock release.
+- Terminal renderable state is collected under lock, while OpenGL work occurs after lock release. Without placements, rendering skips history/viewport placeholder scans and image snapshot allocation.
 
 ## Accepted decisions
 

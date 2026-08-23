@@ -836,8 +836,12 @@ impl Display {
         let cursor = content.cursor();
 
         let size_info = self.size_info;
+        let has_virtual_graphics = terminal.graphics().has_virtual_placements();
         let mut virtual_origins = HashMap::<(u32, u32), Point>::new();
         for line in terminal.grid().topmost_line().0..size_info.screen_lines() as i32 {
+            if !has_virtual_graphics {
+                break;
+            }
             let mut previous = None;
             for column in 0..size_info.columns() {
                 let point = Point::new(Line(line), Column(column));
@@ -859,11 +863,14 @@ impl Display {
                     .or_insert(point);
             }
         }
-        let mut graphics: Vec<_> = terminal
-            .graphics()
-            .renderables_with_virtual_origins(|image_id, placement_id| {
+        let renderables = if terminal.graphics().has_classic_placements() {
+            terminal.graphics().renderables_with_virtual_origins(|image_id, placement_id| {
                 virtual_origins.get(&(image_id, placement_id)).copied()
             })
+        } else {
+            Vec::new()
+        };
+        let mut graphics: Vec<_> = renderables
             .into_iter()
             .filter_map(|graphic| {
                 let viewport_line = i64::from(graphic.line.0) + display_offset as i64;
@@ -930,6 +937,9 @@ impl Display {
         let cell_width = size_info.cell_width();
         let cell_height = size_info.cell_height();
         for viewport_line in 0..size_info.screen_lines() {
+            if !has_virtual_graphics {
+                break;
+            }
             let grid_line = Line(viewport_line as i32 - display_offset as i32);
             let mut previous = None;
             for column in 0..size_info.columns() {
