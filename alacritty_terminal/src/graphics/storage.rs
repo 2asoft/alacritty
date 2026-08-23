@@ -185,6 +185,7 @@ impl GraphicsState {
                     image_id: image.external_id.map_or(0, NonZeroU32::get),
                     content_generation: image.content_generation,
                     creation_serial: placement.creation_serial,
+                    clip_region: location.clip_region,
                 })
             })
             .collect();
@@ -227,16 +228,28 @@ impl GraphicsState {
             image_id: image.external_id.map_or(0, NonZeroU32::get),
             content_generation: image.content_generation,
             creation_serial: placement.creation_serial,
+            clip_region: placement.clip_region,
         })
     }
 
-    pub fn scroll_up(&mut self, region: &std::ops::Range<Line>, lines: usize, history_size: usize) {
-        let relative_images = self.placements.scroll_up(region, lines, history_size);
+    pub fn scroll_up(
+        &mut self,
+        region: &std::ops::Range<Line>,
+        lines: usize,
+        history_size: usize,
+        whole_screen: bool,
+    ) {
+        let relative_images = self.placements.scroll_up(region, lines, history_size, whole_screen);
         self.remove_orphaned_relative_images(relative_images);
     }
 
-    pub fn scroll_down(&mut self, region: &std::ops::Range<Line>, lines: usize) {
-        let relative_images = self.placements.scroll_down(region, lines);
+    pub fn scroll_down(
+        &mut self,
+        region: &std::ops::Range<Line>,
+        lines: usize,
+        whole_screen: bool,
+    ) {
+        let relative_images = self.placements.scroll_down(region, lines, whole_screen);
         self.remove_orphaned_relative_images(relative_images);
     }
 
@@ -284,12 +297,13 @@ impl GraphicsState {
             if placement.virtual_placement && !matches!(selector, b'i' | b'n' | b'r') {
                 return false;
             }
-            let columns = i64::from(placement.columns.unwrap_or(1));
-            let rows = i64::from(placement.rows.unwrap_or(1));
+            let columns = i64::from(placement.cell_span.0);
+            let rows = i64::from(placement.cell_span.1);
             let location = resolved_anchors.get(&placement.handle).copied().unwrap_or_else(|| {
                 super::placement::ResolvedPlacement {
                     line: placement.anchor.line,
                     column: i32::try_from(placement.anchor.column.0).unwrap_or(i32::MAX),
+                    clip_region: placement.clip_region,
                 }
             });
             let top = i64::from(location.line.0);
@@ -411,7 +425,8 @@ impl GraphicsState {
         .ok_or(GraphicsError::NotFound)?;
         let handle = image.handle;
         let image_id = image.external_id;
-        let inserted = self.placements.insert(handle, image_id, command, anchor)?;
+        let span = self.placement_cell_span(command, 1, 1)?;
+        let inserted = self.insert_placement(handle, image_id, command, anchor, span)?;
         self.finish_placement_insert(inserted)
     }
 
@@ -422,8 +437,37 @@ impl GraphicsState {
         anchor: Point,
     ) -> Result<PlacementHandle, GraphicsError> {
         let image_id = self.images.get(&handle).ok_or(GraphicsError::NotFound)?.external_id;
-        let inserted = self.placements.insert(handle, image_id, command, anchor)?;
+        let span = self.placement_cell_span(command, 1, 1)?;
+        let inserted = self.insert_placement(handle, image_id, command, anchor, span)?;
         self.finish_placement_insert(inserted)
+    }
+
+    pub fn place_with_span(
+        &mut self,
+        command: &Command,
+        anchor: Point,
+        span: (u32, u32),
+    ) -> Result<PlacementHandle, GraphicsError> {
+        let handle = self.command_image_handle(command)?;
+        let image_id = self.images.get(&handle).ok_or(GraphicsError::NotFound)?.external_id;
+        let inserted = self.insert_placement(handle, image_id, command, anchor, span)?;
+        self.finish_placement_insert(inserted)
+    }
+
+    fn insert_placement(
+        &mut self,
+        handle: ImageHandle,
+        image_id: Option<NonZeroU32>,
+        command: &Command,
+        anchor: Point,
+        span: (u32, u32),
+    ) -> Result<PlacementInsert, GraphicsError> {
+        let mut placement = command.clone();
+        if command.unicode_placeholder.unwrap_or(0) != 0 {
+            placement.columns = Some(span.0);
+            placement.rows = Some(span.1);
+        }
+        self.placements.insert(handle, image_id, &placement, anchor, span)
     }
 
     fn finish_placement_insert(
@@ -727,7 +771,14 @@ impl GraphicsState {
         let mut transaction = self.clone();
         let outcome = transaction.store_inner(command, pixels)?;
         let span = transaction.placement_cell_span(command, cell_width, cell_height)?;
-        transaction.place_handle(outcome.handle, command, anchor)?;
+        let inserted = transaction.insert_placement(
+            outcome.handle,
+            outcome.image_id,
+            command,
+            anchor,
+            span,
+        )?;
+        transaction.finish_placement_insert(inserted)?;
         *self = transaction;
         Ok((outcome, span))
     }
@@ -1119,6 +1170,20 @@ mod tests {
     }
 
     #[test]
+    fn native_renderables_preserve_unspecified_axes() {
+        for (columns, rows) in [(None, None), (Some(0), None), (None, Some(0)), (Some(0), Some(0))]
+        {
+            let mut state = GraphicsState::new(24);
+            let image = Command { image_id: Some(1), columns, rows, ..Default::default() };
+            state.store(&image, PixelBuffer::from_rgba(3, 2, Arc::from([255; 24]))).unwrap();
+            state.place_with_span(&image, Point::default(), (3, 2)).unwrap();
+            let renderables = state.renderables();
+            assert_eq!(renderables.len(), 1);
+            assert_eq!((renderables[0].columns, renderables[0].rows), (None, None));
+        }
+    }
+
+    #[test]
     fn computes_explicit_inferred_and_native_placement_spans() {
         let mut state = GraphicsState::new(20_000);
         let image = Command { image_id: Some(1), ..Default::default() };
@@ -1233,6 +1298,27 @@ mod tests {
     }
 
     #[test]
+    fn partial_region_scroll_moves_only_contained_placements_and_retains_clipping() {
+        let mut state = GraphicsState::new(4);
+        let image = Command { image_id: Some(1), ..Default::default() };
+        state.store(&image, pixels(1, 4)).unwrap();
+        let contained = Command { columns: Some(1), rows: Some(4), ..image.clone() };
+        state.place(&contained, Point::new(Line(2), crate::index::Column(0))).unwrap();
+        state.place(&contained, Point::new(Line(0), crate::index::Column(1))).unwrap();
+        let region = Line(1)..Line(8);
+
+        state.scroll_up(&region, 3, 0, false);
+        let mut placements: Vec<_> = state.placements().collect();
+        placements.sort_by_key(|placement| placement.anchor().column);
+        assert_eq!(placements[0].anchor().line, Line(-1));
+        assert_eq!(placements[0].clip_region, Some((Line(1), Line(8))));
+        assert_eq!(placements[1].anchor().line, Line(0));
+
+        state.scroll_up(&region, 3, 0, false);
+        assert_eq!(state.placements().count(), 1);
+    }
+
+    #[test]
     fn placements_follow_scrollback_and_are_pruned_with_history() {
         let mut state = GraphicsState::new(4);
         let command = Command { image_id: Some(1), ..Default::default() };
@@ -1240,9 +1326,9 @@ mod tests {
         state.place(&command, Point::new(Line(0), crate::index::Column(2))).unwrap();
         let region = Line(0)..Line(10);
 
-        state.scroll_up(&region, 1, 2);
+        state.scroll_up(&region, 1, 2, true);
         assert_eq!(state.placements().next().unwrap().anchor().line, Line(-1));
-        state.scroll_up(&region, 2, 2);
+        state.scroll_up(&region, 2, 2, true);
         assert!(state.placements().next().is_none());
     }
 
@@ -1276,7 +1362,7 @@ mod tests {
             .unwrap();
         assert_eq!((child.line, child.column), (Line(2), 6));
 
-        state.scroll_up(&(Line(0)..Line(10)), 1, 10);
+        state.scroll_up(&(Line(0)..Line(10)), 1, 10, true);
         let child = state
             .renderables()
             .into_iter()

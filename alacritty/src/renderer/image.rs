@@ -102,6 +102,8 @@ pub struct RenderableImage {
     pub z_index: i32,
     pub image_id: u32,
     pub creation_serial: u64,
+    pub clip_top: f32,
+    pub clip_bottom: f32,
 }
 
 #[repr(C)]
@@ -335,14 +337,29 @@ impl ImageRenderer {
             image.x + (left - image.source_x) as f32 / image.source_width as f32 * image.width;
         let destination_right =
             image.x + (right - image.source_x) as f32 / image.source_width as f32 * image.width;
-        let destination_top =
+        let mut destination_top =
             image.y + (top - image.source_y) as f32 / image.source_height as f32 * image.height;
-        let destination_bottom =
+        let mut destination_bottom =
             image.y + (bottom - image.source_y) as f32 / image.source_height as f32 * image.height;
         let texture_left = (left - region.upload_x) as f32 / region.upload_width as f32;
         let texture_right = (right - region.upload_x) as f32 / region.upload_width as f32;
-        let texture_top = (top - region.upload_y) as f32 / region.upload_height as f32;
-        let texture_bottom = (bottom - region.upload_y) as f32 / region.upload_height as f32;
+        let mut texture_top = (top - region.upload_y) as f32 / region.upload_height as f32;
+        let mut texture_bottom = (bottom - region.upload_y) as f32 / region.upload_height as f32;
+        if destination_top < image.clip_top {
+            let fraction =
+                (image.clip_top - destination_top) / (destination_bottom - destination_top);
+            texture_top += fraction * (texture_bottom - texture_top);
+            destination_top = image.clip_top;
+        }
+        if destination_bottom > image.clip_bottom {
+            let fraction =
+                (destination_bottom - image.clip_bottom) / (destination_bottom - destination_top);
+            texture_bottom -= fraction * (texture_bottom - texture_top);
+            destination_bottom = image.clip_bottom;
+        }
+        if destination_top >= destination_bottom {
+            return;
+        }
         let left = destination_left / (viewport_width / 2.) - 1.;
         let right = destination_right / (viewport_width / 2.) - 1.;
         let top = 1. - destination_top / (viewport_height / 2.);

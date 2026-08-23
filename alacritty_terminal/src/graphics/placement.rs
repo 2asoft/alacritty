@@ -39,9 +39,11 @@ pub struct Placement {
     pub(crate) y_offset: u32,
     pub(crate) columns: Option<u32>,
     pub(crate) rows: Option<u32>,
+    pub(crate) cell_span: (u32, u32),
     pub(crate) z_index: i32,
     pub(crate) virtual_placement: bool,
     pub(crate) relative: Option<RelativePlacement>,
+    pub(crate) clip_region: Option<(Line, Line)>,
     pub(crate) creation_serial: u64,
 }
 
@@ -49,6 +51,7 @@ pub struct Placement {
 pub(crate) struct ResolvedPlacement {
     pub line: Line,
     pub column: i32,
+    pub clip_region: Option<(Line, Line)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -69,6 +72,7 @@ pub struct RenderableGraphic {
     pub image_id: u32,
     pub content_generation: u64,
     pub creation_serial: u64,
+    pub clip_region: Option<(Line, Line)>,
 }
 
 impl Placement {
@@ -168,6 +172,7 @@ impl Placements {
         Some(ResolvedPlacement {
             line: Line(root_anchor.line.0.checked_add(vertical_cells)?),
             column: i32::try_from(root_anchor.column.0).ok()?.checked_add(horizontal_cells)?,
+            clip_region: root.clip_region,
         })
     }
 
@@ -176,23 +181,34 @@ impl Placements {
         region: &std::ops::Range<Line>,
         lines: usize,
         history_size: usize,
+        whole_screen: bool,
     ) -> Vec<ImageHandle> {
         let lines = lines as i32;
-        let full_screen = region.start == Line(0);
+        let creates_history = region.start == Line(0);
         self.retain(|placement| {
-            let outside_region = if full_screen {
+            if placement.relative.is_some() {
+                return true;
+            }
+            let bottom = i64::from(placement.anchor.line.0) + i64::from(placement.cell_span.1);
+            let contained =
+                placement.anchor.line >= region.start && bottom <= i64::from(region.end.0);
+            let clipped_to_region = placement.clip_region == Some((region.start, region.end));
+            if if whole_screen {
                 placement.anchor.line >= region.end
             } else {
-                placement.anchor.line < region.start || placement.anchor.line >= region.end
-            };
-            if outside_region || placement.relative.is_some() {
+                !contained && !clipped_to_region
+            } {
                 return true;
             }
             placement.anchor.line -= lines;
-            if full_screen {
-                placement.anchor.line >= Line(-(history_size as i32))
+            if !whole_screen {
+                placement.clip_region = Some((region.start, region.end));
+            }
+            if creates_history {
+                placement.anchor.line.0 >= -(history_size as i32)
             } else {
-                placement.anchor.line >= region.start
+                i64::from(placement.anchor.line.0) + i64::from(placement.cell_span.1)
+                    > i64::from(region.start.0)
             }
         })
     }
@@ -201,16 +217,24 @@ impl Placements {
         &mut self,
         region: &std::ops::Range<Line>,
         lines: usize,
+        whole_screen: bool,
     ) -> Vec<ImageHandle> {
         let lines = lines as i32;
         self.retain(|placement| {
-            if placement.relative.is_some()
-                || placement.anchor.line < region.start
-                || placement.anchor.line >= region.end
-            {
+            if placement.relative.is_some() {
+                return true;
+            }
+            let bottom = i64::from(placement.anchor.line.0) + i64::from(placement.cell_span.1);
+            let contained =
+                placement.anchor.line >= region.start && bottom <= i64::from(region.end.0);
+            let clipped_to_region = placement.clip_region == Some((region.start, region.end));
+            if !contained && !clipped_to_region {
                 return true;
             }
             placement.anchor.line += lines;
+            if !whole_screen {
+                placement.clip_region = Some((region.start, region.end));
+            }
             placement.anchor.line < region.end
         })
     }
@@ -260,6 +284,7 @@ impl Placements {
         image_id: Option<NonZeroU32>,
         command: &Command,
         anchor: Point,
+        cell_span: (u32, u32),
     ) -> Result<PlacementInsert, GraphicsError> {
         let placement_id = NonZeroU32::new(command.placement_id.unwrap_or(0));
         let named = image_id.zip(placement_id);
@@ -323,9 +348,11 @@ impl Placements {
             y_offset: command.y_offset.unwrap_or(0),
             columns: NonZeroU32::new(command.columns.unwrap_or(0)).map(NonZeroU32::get),
             rows: NonZeroU32::new(command.rows.unwrap_or(0)).map(NonZeroU32::get),
+            cell_span,
             z_index: command.z_index.unwrap_or(0),
             virtual_placement: command.unicode_placeholder == Some(1),
             relative,
+            clip_region: None,
             creation_serial: self.serial,
         };
         self.entries.insert(handle, placement);

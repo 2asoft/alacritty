@@ -885,7 +885,11 @@ impl<T> Term<T> {
                         .placement_cell_span(&command, self.cell_width, self.cell_height)
                         .and_then(|span| {
                             self.graphics
-                                .place(&command, command.anchor.unwrap_or(self.grid.cursor.point))
+                                .place_with_span(
+                                    &command,
+                                    command.anchor.unwrap_or(self.grid.cursor.point),
+                                    span,
+                                )
                                 .map(|_| {
                                     (std::num::NonZeroU32::new(command.image_id.unwrap_or(0)), span)
                                 })
@@ -1120,7 +1124,9 @@ impl<T> Term<T> {
         }
 
         // Scroll between origin and bottom.
-        self.graphics.scroll_down(&region, lines);
+        let whole_screen =
+            region.start == Line(0) && region.end == Line(self.screen_lines() as i32);
+        self.graphics.scroll_down(&region, lines, whole_screen);
         self.grid.scroll_down(&region, lines);
         self.mark_fully_damaged();
     }
@@ -1140,8 +1146,10 @@ impl<T> Term<T> {
         // Scroll selection.
         self.selection = self.selection.take().and_then(|s| s.rotate(self, &region, lines as i32));
 
+        let whole_screen =
+            region.start == Line(0) && region.end == Line(self.screen_lines() as i32);
         self.grid.scroll_up(&region, lines);
-        self.graphics.scroll_up(&region, lines, self.history_size());
+        self.graphics.scroll_up(&region, lines, self.history_size(), whole_screen);
 
         // Scroll vi mode cursor.
         let viewport_top = Line(-(self.grid.display_offset() as i32));

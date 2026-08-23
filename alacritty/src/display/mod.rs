@@ -866,7 +866,7 @@ impl Display {
             })
             .into_iter()
             .filter_map(|graphic| {
-                let viewport_line = graphic.line.0 + display_offset as i32;
+                let viewport_line = i64::from(graphic.line.0) + display_offset as i64;
                 let image_width = graphic.pixels.width();
                 let image_height = graphic.pixels.height();
                 let source_x = graphic.source_x.min(image_width);
@@ -891,6 +891,17 @@ impl Display {
                     (cell_width, cell_height),
                     (graphic.x_offset, graphic.y_offset),
                 );
+                let (clip_top, clip_bottom) = graphic.clip_region.map_or(
+                    (f32::NEG_INFINITY, f32::INFINITY),
+                    |(start, end)| {
+                        (
+                            size_info.padding_y()
+                                + (i64::from(start.0) + display_offset as i64) as f32 * cell_height,
+                            size_info.padding_y()
+                                + (i64::from(end.0) + display_offset as i64) as f32 * cell_height,
+                        )
+                    },
+                );
                 Some(RenderableImage {
                     image: graphic.image,
                     content_generation: graphic.content_generation,
@@ -910,6 +921,8 @@ impl Display {
                     z_index: graphic.z_index,
                     image_id: graphic.image_id,
                     creation_serial: graphic.creation_serial,
+                    clip_top,
+                    clip_bottom,
                 })
             })
             .collect();
@@ -974,6 +987,8 @@ impl Display {
                     z_index: prototype.z_index,
                     image_id: prototype.image_id,
                     creation_serial: prototype.creation_serial,
+                    clip_top: f32::NEG_INFINITY,
+                    clip_bottom: f32::INFINITY,
                 });
             }
         }
