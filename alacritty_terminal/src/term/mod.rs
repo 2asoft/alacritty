@@ -917,7 +917,12 @@ impl<T> Term<T> {
             ProcessedCommand::Error { command: Some(command), error } => {
                 self.graphics_response(&command, Err(error));
             },
-            ProcessedCommand::Error { command: None, .. } => (),
+            ProcessedCommand::Error { command: None, error } => {
+                self.event_proxy.send_event(Event::PtyWrite(format!(
+                    "\x1b_Gi=0;{}\x1b\\",
+                    error.protocol_code()
+                )));
+            },
         }
         self.mark_fully_damaged();
     }
@@ -2940,6 +2945,24 @@ mod tests {
                 self.0.lock().unwrap().push(response);
             }
         }
+    }
+
+    #[test]
+    fn malformed_kitty_command_returns_bounded_error() {
+        let size = TermSize::new(5, 10);
+        let config = Config {
+            graphics: GraphicsConfig { enabled: true, ..Default::default() },
+            ..Default::default()
+        };
+        let listener = RecordingListener::default();
+        let responses = listener.0.clone();
+        let mut term = Term::new(config, &size, listener);
+        let mut parser = ansi::Processor::<ansi::StdSyncHandler>::new();
+        let _consumed = parser.advance_until_terminated(&mut term, b"\x1b_Gi=invalid\x1b\\");
+        let command = term.take_graphics_command().unwrap();
+        term.commit_graphics_command(crate::graphics::process_command(command, 4, true));
+
+        assert_eq!(responses.lock().unwrap().as_slice(), ["\x1b_Gi=0;EINVAL\x1b\\"]);
     }
 
     #[test]
