@@ -52,6 +52,16 @@ fuzz_target!(|data: &[u8]| {
         remaining = &remaining[consumed..];
     }
 
+    if data.first().is_some_and(|byte| byte & 2 != 0) {
+        parser.advance(&mut term, b"\x18\x1b[2J\x1b[?1049h\x1b[?1049l\x1bc");
+    }
+    if data.first().is_some_and(|byte| byte & 4 != 0) {
+        for _ in 0..usize::from(data.get(3).copied().unwrap_or(0) % 16) {
+            parser.advance(&mut term, b"\n");
+        }
+    }
+    let _ = term.advance_graphics_animations(std::time::Instant::now());
+
     if data.first().is_some_and(|byte| byte & 1 != 0) {
         let columns = usize::from(data.get(1).copied().unwrap_or(0) % 31 + 2);
         let lines = usize::from(data.get(2).copied().unwrap_or(0) % 15 + 2);
