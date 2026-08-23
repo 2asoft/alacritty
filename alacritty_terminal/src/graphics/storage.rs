@@ -137,6 +137,103 @@ impl GraphicsState {
         self.placements.scroll_down(region, lines);
     }
 
+    pub fn delete(
+        &mut self,
+        command: &Command,
+        cursor: Point,
+        visible_lines: std::ops::Range<Line>,
+    ) -> Result<(), GraphicsError> {
+        let selector = command.delete.map_or(b'a', |selector| selector.0);
+        let free_data = selector.is_ascii_uppercase();
+        let selector = selector.to_ascii_lowercase();
+        let placement_id = NonZeroU32::new(command.placement_id.unwrap_or(0));
+
+        let explicit_image = match selector {
+            b'i' => NonZeroU32::new(command.image_id.unwrap_or(0))
+                .and_then(|id| self.image_ids.get(&id).copied()),
+            b'n' => command
+                .image_number
+                .and_then(|number| self.newest_by_number(number))
+                .map(|image| image.handle),
+            _ => None,
+        };
+        if matches!(selector, b'i' | b'n') && explicit_image.is_none() {
+            return Ok(());
+        }
+
+        let cell = || {
+            let x = command.x.unwrap_or(1).saturating_sub(1) as usize;
+            let y = i64::from(command.y.unwrap_or(1).saturating_sub(1));
+            (x, y)
+        };
+        let affected = self.placements.remove_matching(|placement| {
+            let columns = placement.columns.unwrap_or(1) as usize;
+            let rows = i64::from(placement.rows.unwrap_or(1));
+            let top = i64::from(placement.anchor.line.0);
+            let intersects = |(column, line): (usize, i64)| {
+                line >= top
+                    && line < top + rows
+                    && column >= placement.anchor.column.0
+                    && column < placement.anchor.column.0.saturating_add(columns)
+            };
+            match selector {
+                b'a' => {
+                    placement.anchor.line >= visible_lines.start
+                        && placement.anchor.line < visible_lines.end
+                },
+                b'i' | b'n' => {
+                    Some(placement.image) == explicit_image
+                        && placement_id.is_none_or(|id| placement.placement_id == Some(id))
+                },
+                b'c' => intersects((cursor.column.0, i64::from(cursor.line.0))),
+                b'p' => intersects(cell()),
+                b'q' => intersects(cell()) && placement.z_index == command.z_index.unwrap_or(0),
+                b'x' => {
+                    let column = command.x.unwrap_or(1).saturating_sub(1) as usize;
+                    column >= placement.anchor.column.0
+                        && column < placement.anchor.column.0.saturating_add(columns)
+                },
+                b'y' => {
+                    let line = i64::from(command.y.unwrap_or(1).saturating_sub(1));
+                    line >= top && line < top + rows
+                },
+                b'z' => placement.z_index == command.z_index.unwrap_or(0),
+                b'r' => placement.image_id.is_some_and(|id| {
+                    id.get() >= command.x.unwrap_or(0) && id.get() <= command.y.unwrap_or(u32::MAX)
+                }),
+                _ => false,
+            }
+        });
+
+        if free_data {
+            if let Some(image) = explicit_image {
+                if placement_id.is_none() || !self.placements.image_is_placed(image) {
+                    self.remove(image);
+                }
+            }
+            for image in affected {
+                if !self.placements.image_is_placed(image) {
+                    self.remove(image);
+                }
+            }
+            if selector == b'r' {
+                let ids: Vec<_> = self
+                    .image_ids
+                    .iter()
+                    .filter(|(id, _)| {
+                        id.get() >= command.x.unwrap_or(0)
+                            && id.get() <= command.y.unwrap_or(u32::MAX)
+                    })
+                    .map(|(_, handle)| *handle)
+                    .collect();
+                for handle in ids {
+                    self.remove(handle);
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn place(
         &mut self,
         command: &Command,
@@ -328,6 +425,46 @@ mod tests {
 
         assert_ne!(first.image_id, second.image_id);
         assert_eq!(state.newest_by_number(9).unwrap().pixels().bytes(), &[2; 4]);
+    }
+
+    #[test]
+    fn deletion_handles_large_row_spans() {
+        for rows in [i32::MAX as u32, u32::MAX] {
+            let mut state = GraphicsState::new(4);
+            let image = Command { image_id: Some(1), rows: Some(rows), ..Default::default() };
+            state.store(&image, pixels(1, 4)).unwrap();
+            state.place(&image, Point::new(Line(1), crate::index::Column(0))).unwrap();
+            let delete = Command {
+                delete: Some(crate::graphics::DeleteTarget(b'y')),
+                y: Some(i32::MAX as u32 + 1),
+                ..Default::default()
+            };
+            state.delete(&delete, Point::default(), Line(0)..Line(24)).unwrap();
+            assert!(state.placements().next().is_none());
+        }
+    }
+
+    #[test]
+    fn deletion_distinguishes_placement_and_image_data() {
+        let id = NonZeroU32::new(1).unwrap();
+        let mut state = GraphicsState::new(4);
+        let image = Command { image_id: Some(id.get()), ..Default::default() };
+        state.store(&image, pixels(1, 4)).unwrap();
+        state.place(&image, Point::new(Line(0), crate::index::Column(0))).unwrap();
+        let visible = Line(0)..Line(10);
+
+        let soft = Command {
+            delete: Some(crate::graphics::DeleteTarget(b'i')),
+            image_id: Some(id.get()),
+            ..Default::default()
+        };
+        state.delete(&soft, Point::default(), visible.clone()).unwrap();
+        assert!(state.placements().next().is_none());
+        assert!(state.image_by_id(id).is_some());
+
+        let hard = Command { delete: Some(crate::graphics::DeleteTarget(b'I')), ..soft };
+        state.delete(&hard, Point::default(), visible).unwrap();
+        assert!(state.image_by_id(id).is_none());
     }
 
     #[test]

@@ -720,6 +720,9 @@ impl<T> Term<T> {
             .unwrap_or(usize::MAX);
 
         if let Some(pending) = self.pending_graphics_transmission.take() {
+            if command.action == Some(GraphicsAction::Delete) {
+                return Some(GraphicsRequest::Command(Ok(command)));
+            }
             return match pending.push(command, encoded_limit) {
                 Ok(PendingResult::Pending(pending)) => {
                     self.pending_graphics_transmission = Some(pending);
@@ -766,7 +769,14 @@ impl<T> Term<T> {
                 self.graphics_response(&command, result);
             },
             ProcessedCommand::Metadata(command) => {
-                if command.action == Some(GraphicsAction::Place) {
+                if command.action == Some(GraphicsAction::Delete) {
+                    let visible_lines = Line(0)..Line(self.screen_lines() as i32);
+                    let result = self
+                        .graphics
+                        .delete(&command, self.grid.cursor.point, visible_lines)
+                        .map(|_| std::num::NonZeroU32::new(command.image_id.unwrap_or(0)));
+                    self.graphics_response(&command, result);
+                } else if command.action == Some(GraphicsAction::Place) {
                     let result = self
                         .graphics
                         .place(&command, self.grid.cursor.point)

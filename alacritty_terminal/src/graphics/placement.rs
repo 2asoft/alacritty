@@ -115,6 +115,30 @@ impl Placements {
         });
     }
 
+    pub fn remove_matching(
+        &mut self,
+        mut matches: impl FnMut(&Placement) -> bool,
+    ) -> Vec<ImageHandle> {
+        let handles: Vec<_> = self
+            .entries
+            .values()
+            .filter(|placement| matches(placement))
+            .map(|placement| placement.handle)
+            .collect();
+        let mut images = Vec::with_capacity(handles.len());
+        for handle in handles {
+            if let Some(placement) = self.entries.get(&handle) {
+                images.push(placement.image);
+            }
+            self.remove(handle);
+        }
+        images
+    }
+
+    pub fn image_is_placed(&self, image: ImageHandle) -> bool {
+        self.entries.values().any(|placement| placement.image == image)
+    }
+
     pub fn remove_image(&mut self, image: ImageHandle) {
         let handles: Vec<_> = self
             .entries
