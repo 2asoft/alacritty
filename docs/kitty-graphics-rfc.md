@@ -3688,28 +3688,26 @@ For graphics workloads:
 
 # Appendix E: Definition of done
 
-The feature is complete when all of the following are true:
+The feature is complete only when every row in [the Kitty graphics conformance requirements](kitty-graphics-conformance.md) is `Covered` or records an accepted policy difference. In particular:
 
-1. current official Kitty graphics action families are implemented;
-2. all defined source formats and compression modes are implemented;
-3. all defined transfer transports supported by host OS are implemented;
-4. capability-query ordering is correct;
-5. image IDs, image numbers, placement IDs, and atomic replacement are correct;
-6. classic placements survive scrolling and primary-buffer reflow;
+1. every current action, key, default, response, quiet level, error identity, and parser boundary has a wire-level test;
+2. RGB, RGBA, every valid PNG form, and zlib for each format have bounded success and failure tests;
+3. direct chunks, regular files, constrained temporary files, POSIX shared memory, and non-Unix shared-memory rejection have lifecycle and range tests;
+4. queries validate without mutation and remain ordered before later terminal responses;
+5. image IDs, image numbers, placement IDs, successful replacement, failed atomic replacement, and generated responses are correct;
+6. classic crop, scale, offset, clipping, cursor movement, scroll, reverse scroll, margins, history, and primary-buffer reflow are correct;
 7. pruned anchors never survive as corrupted positions;
-8. Unicode placeholders pass exhaustive encoding/inheritance tests;
-9. relative placements pass cycle/depth/lifetime tests;
-10. animation frame load/control/composition/deletion work;
-11. full protocol deletion selectors work;
-12. primary/alternate/reset interactions are correct;
-13. quotas make image and metadata memory bounded;
-14. local-object transports are bounded and configurable;
-15. no large transport/decode operation holds the terminal lock;
-16. OpenGL renderer paths reproduce required z/alpha semantics;
-17. oversized images tile across hardware texture limits;
-18. GPU context loss is recoverable without retransmission;
-19. parser, state machine, image decoders, and random grid interaction are fuzz-tested;
-20. ordinary non-graphics Alacritty workloads show no material steady-state regression.
+8. Unicode placeholders pass exhaustive identity, inheritance, placement-ID, background, sparse-grid, clipping, scrolling, and deletion tests;
+9. relative placements pass parent selection, virtual-parent origin, offset, cursor, cycle, depth, error-response, replacement, deletion, pruning, and eviction tests;
+10. every lowercase and uppercase deletion selector, optional placement qualifier, range boundary, virtual-placement rule, and upload-cancellation rule works;
+11. animation frame loading, editing, default and gapless timing, canvases, chunking, control states, finite and infinite loops, stop reset, composition, deletion, retransmission, scheduling, and visible playback work;
+12. primary, alternate, RIS, clear-screen, text-erasure, and placeholder-erasure interactions are correct;
+13. image bytes, frame bytes, pending data, metadata, GPU cache, and transient uploads remain bounded and repeated lifecycle operations have stable accounting;
+14. no large transport, decode, or allocation operation holds the terminal lock;
+15. framebuffer tests reproduce all z strata, equal-z ordering, alpha overlap, transparent backgrounds, crop/scale/offset, placeholder suppression, animation, texture eviction, GL-state restoration, and context reconstruction;
+16. parser, transaction, state machine, image decoders, animation, and random grid interaction are fuzz-tested;
+17. graphics-client pixel and cell geometry queries remain coherent;
+18. ordinary non-graphics Alacritty workloads show no material steady-state parser, memory, or redraw regression.
 
 ---
 

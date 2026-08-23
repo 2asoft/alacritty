@@ -11,7 +11,7 @@ This repository contains Alacritty, its reusable terminal core, configuration cr
 
 ## Governing constraints
 
-- Preserve ordinary terminal behavior and the no-graphics fast path.
+- Preserve ordinary terminal behavior and the no-placement fast path while graphics support remains always available.
 - Treat PTY output and local transport references as untrusted input.
 - Keep canonical image data in terminal-owned CPU state. GPU resources are disposable caches.
 - Keep protocol operations ordered and large I/O, decode, and allocation work outside the terminal mutex.
