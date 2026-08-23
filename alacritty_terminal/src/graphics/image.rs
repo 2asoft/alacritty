@@ -179,7 +179,7 @@ fn decode_rgb(
     if source.len() < source_size {
         return Err(GraphicsError::NoData);
     }
-    if source.len() > source_size {
+    if source.len() > source_size && command.action != Some(Action::TransmitFrame) {
         return Err(GraphicsError::Invalid);
     }
     if canonical_size > storage_limit {
@@ -187,7 +187,7 @@ fn decode_rgb(
     }
 
     let mut bytes = Vec::with_capacity(canonical_size);
-    for pixel in source.chunks_exact(3) {
+    for pixel in source[..source_size].chunks_exact(3) {
         bytes.extend_from_slice(pixel);
         bytes.push(255);
     }
@@ -196,7 +196,7 @@ fn decode_rgb(
 
 fn decode_rgba(
     command: &Command,
-    source: Vec<u8>,
+    mut source: Vec<u8>,
     storage_limit: usize,
 ) -> Result<PixelBuffer, GraphicsError> {
     let (width, height) = dimensions(command)?;
@@ -204,12 +204,13 @@ fn decode_rgba(
     if source.len() < canonical_size {
         return Err(GraphicsError::NoData);
     }
-    if source.len() > canonical_size {
+    if source.len() > canonical_size && command.action != Some(Action::TransmitFrame) {
         return Err(GraphicsError::Invalid);
     }
     if canonical_size > storage_limit {
         return Err(GraphicsError::NoSpace);
     }
+    source.truncate(canonical_size);
     Ok(PixelBuffer { width, height, bytes: source.into() })
 }
 
@@ -345,6 +346,13 @@ mod tests {
             decoded(direct(Format::Rgba, 1, 1, &[1, 2, 3, 4]), 3),
             Err(GraphicsError::NoSpace)
         );
+    }
+
+    #[test]
+    fn truncates_excess_animation_frame_data() {
+        let mut command = direct(Format::Rgb, 1, 1, &[1, 2, 3, 4, 5, 6]);
+        command.action = Some(Action::TransmitFrame);
+        assert_eq!(decoded(command, 4).unwrap().bytes(), &[1, 2, 3, 255]);
     }
 
     #[test]

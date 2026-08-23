@@ -653,11 +653,21 @@ impl GraphicsState {
         let source_y = command.y_offset.unwrap_or(0);
         let width = command.crop_width.unwrap_or(source.width().saturating_sub(source_x));
         let height = command.crop_height.unwrap_or(source.height().saturating_sub(source_y));
+        let destination_x = command.x.unwrap_or(0);
+        let destination_y = command.y.unwrap_or(0);
+        let overlaps = source_index == destination_index
+            && source_x < destination_x.saturating_add(width)
+            && destination_x < source_x.saturating_add(width)
+            && source_y < destination_y.saturating_add(height)
+            && destination_y < source_y.saturating_add(height);
+        if overlaps {
+            return Err(GraphicsError::Invalid);
+        }
         let composed = compose(destination, source, FrameComposition {
             source_x,
             source_y,
-            destination_x: command.x.unwrap_or(0),
-            destination_y: command.y.unwrap_or(0),
+            destination_x,
+            destination_y,
             width,
             height,
             overwrite: command.cursor_policy.unwrap_or(0) != 0,
@@ -689,29 +699,28 @@ impl GraphicsState {
     pub fn control_animation(&mut self, command: &Command) -> Result<(), GraphicsError> {
         let handle = self.command_image_handle(command)?;
         let image = self.images.get_mut(&handle).ok_or(GraphicsError::NotFound)?;
-        if let Some(frame) = command.rows.and_then(|frame| frame.checked_sub(1)) {
-            let gap = command.z_index.filter(|gap| *gap != 0).ok_or(GraphicsError::Invalid)?;
+        if let (Some(frame), Some(gap)) = (
+            command.rows.and_then(|frame| frame.checked_sub(1)),
+            command.z_index.filter(|gap| *gap != 0),
+        ) {
             if frame == 0 {
-                image.root_gap_ms = gap;
-            } else {
-                image.frames.get_mut(frame as usize - 1).ok_or(GraphicsError::NotFound)?.gap_ms =
-                    gap;
+                image.root_gap_ms = gap.max(0);
+            } else if let Some(frame) = image.frames.get_mut(frame as usize - 1) {
+                frame.gap_ms = gap.max(0);
             }
         }
         if let Some(frame) = command.columns.and_then(|frame| frame.checked_sub(1)) {
-            if image.frame(frame as usize).is_none() {
-                return Err(GraphicsError::NotFound);
+            if image.frame(frame as usize).is_some() {
+                image.current_frame = frame as usize;
+                self.serial = self.serial.checked_add(1).ok_or(GraphicsError::TooLarge)?;
+                image.content_generation = self.serial;
             }
-            image.current_frame = frame as usize;
-            self.serial = self.serial.checked_add(1).ok_or(GraphicsError::TooLarge)?;
-            image.content_generation = self.serial;
         }
         image.animation_state = match command.width.unwrap_or(0) {
-            0 => image.animation_state,
             1 => AnimationState::Stopped,
             2 => AnimationState::Loading,
             3 => AnimationState::Running,
-            _ => return Err(GraphicsError::Invalid),
+            _ => image.animation_state,
         };
         if command.height.unwrap_or(0) != 0 {
             image.loops = command.height.unwrap_or(1);
@@ -1255,6 +1264,9 @@ mod tests {
             .unwrap();
         assert!(state.image_by_id(NonZeroU32::new(1).unwrap()).is_some());
         assert!(state.image_by_id(NonZeroU32::new(1).unwrap()).unwrap().frames.is_empty());
+        state
+            .place(&Command { image_id: Some(1), ..Default::default() }, Point::default())
+            .unwrap();
 
         state
             .delete(
@@ -1269,6 +1281,7 @@ mod tests {
             )
             .unwrap();
         assert!(state.image_by_id(NonZeroU32::new(1).unwrap()).is_none());
+        assert_eq!(state.placements().count(), 0);
         assert_invariants(&state);
     }
 
@@ -1311,6 +1324,17 @@ mod tests {
             &[1; 4]
         );
 
+        assert_eq!(
+            state.compose_frames(&Command {
+                action: Some(Action::ComposeFrame),
+                image_id: Some(1),
+                rows: Some(1),
+                columns: Some(1),
+                ..Default::default()
+            }),
+            Err(GraphicsError::Invalid)
+        );
+
         state
             .delete(
                 &Command {
@@ -1328,6 +1352,31 @@ mod tests {
             state.image_by_id(NonZeroU32::new(1).unwrap()).unwrap().pixels().bytes(),
             &[1; 4]
         );
+    }
+
+    #[test]
+    fn animation_control_ignores_unknown_state_and_frame_values() {
+        let mut state = GraphicsState::new(8);
+        let image = Command { image_id: Some(1), ..Default::default() };
+        state.store(&image, pixels(1, 4)).unwrap();
+        state
+            .store_frame(&Command { image_id: Some(1), ..Default::default() }, pixels(2, 4))
+            .unwrap();
+
+        state
+            .control_animation(&Command {
+                image_id: Some(1),
+                rows: Some(9),
+                columns: Some(9),
+                width: Some(7),
+                z_index: Some(50),
+                ..Default::default()
+            })
+            .unwrap();
+        let image = state.image_by_id(NonZeroU32::new(1).unwrap()).unwrap();
+        assert_eq!(image.current_frame, 0);
+        assert_eq!(image.root_gap_ms, 0);
+        assert_eq!(image.animation_state, AnimationState::Stopped);
     }
 
     #[test]

@@ -899,11 +899,9 @@ impl<T> Term<T> {
                     }
                     self.graphics_response(&command, result.map(|(image_id, _)| image_id));
                 } else if command.action == Some(GraphicsAction::Animate) {
-                    let result = self
-                        .graphics
-                        .control_animation(&command)
-                        .map(|_| std::num::NonZeroU32::new(command.image_id.unwrap_or(0)));
-                    self.graphics_response(&command, result);
+                    if let Err(error) = self.graphics.control_animation(&command) {
+                        self.graphics_response(&command, Err(error));
+                    }
                 } else if command.action == Some(GraphicsAction::ComposeFrame) {
                     let result = self
                         .graphics
@@ -3035,6 +3033,40 @@ mod tests {
         });
 
         assert_eq!(responses.lock().unwrap().as_slice(), ["\x1b_Gi=1,r=2;OK\x1b\\"]);
+    }
+
+    #[test]
+    fn kitty_animation_control_only_responds_to_errors() {
+        let size = TermSize::new(5, 10);
+        let config = Config {
+            graphics: GraphicsConfig { enabled: true, ..Default::default() },
+            ..Default::default()
+        };
+        let listener = RecordingListener::default();
+        let responses = listener.0.clone();
+        let mut term = Term::new(config, &size, listener);
+        term.graphics
+            .store(
+                &GraphicsCommand { image_id: Some(1), ..Default::default() },
+                crate::graphics::PixelBuffer::from_rgba(1, 1, Arc::from([1, 2, 3, 4])),
+            )
+            .unwrap();
+
+        term.commit_graphics_command(ProcessedCommand::Metadata(GraphicsCommand {
+            action: Some(GraphicsAction::Animate),
+            image_id: Some(1),
+            width: Some(3),
+            ..Default::default()
+        }));
+        assert!(responses.lock().unwrap().is_empty());
+
+        term.commit_graphics_command(ProcessedCommand::Metadata(GraphicsCommand {
+            action: Some(GraphicsAction::Animate),
+            image_id: Some(9),
+            width: Some(3),
+            ..Default::default()
+        }));
+        assert_eq!(responses.lock().unwrap().as_slice(), ["\x1b_Gi=9;ENOENT\x1b\\"]);
     }
 
     #[test]

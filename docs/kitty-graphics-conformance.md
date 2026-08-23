@@ -32,9 +32,9 @@ The protocol defines required behavior. External tests identify scenarios and ex
 | Placeholder | Color IDs, third diacritic, inheritance, and placement IDs | Covered |
 | Placeholder | Fit-and-center source geometry for a virtual placement box | Covered |
 | Placeholder | Resolved placeholder glyphs remain invisible through transparent pixels | Covered |
-| Animation | Frame create, edit, control, composition, and scheduling | Partial |
+| Animation | Frame create, edit, control, composition, and scheduling | Covered |
 | Animation | Root editing, gap preservation, frame-number replies, and root promotion | Covered |
-| Animation | Frame deletion edge cases and excess-data behavior | Partial |
+| Animation | Frame deletion edge cases and excess-data behavior | Covered |
 | Quota | Canonical bytes, reservations, metadata, and deterministic eviction | Covered |
 | Quota | Transient and unplaced images receive deterministic eviction priority | Covered |
 | Quota | Non-visible placements are evicted before visible placements | Gap |
