@@ -758,11 +758,8 @@ impl<T> Term<T> {
             ProcessedCommand::Decoded { command, image } => {
                 let result = self.graphics.store(&command, image).and_then(|outcome| {
                     if command.action == Some(GraphicsAction::TransmitAndPlace) {
-                        self.graphics.place_handle(
-                            outcome.handle,
-                            &command,
-                            self.grid.cursor.point,
-                        )?;
+                        let anchor = command.anchor.unwrap_or(self.grid.cursor.point);
+                        self.graphics.place_handle(outcome.handle, &command, anchor)?;
                     }
                     Ok(outcome.image_id)
                 });
@@ -779,7 +776,7 @@ impl<T> Term<T> {
                 } else if command.action == Some(GraphicsAction::Place) {
                     let result = self
                         .graphics
-                        .place(&command, self.grid.cursor.point)
+                        .place(&command, command.anchor.unwrap_or(self.grid.cursor.point))
                         .map(|_| std::num::NonZeroU32::new(command.image_id.unwrap_or(0)));
                     self.graphics_response(&command, result);
                 } else if command.more != Some(true) {
@@ -1268,7 +1265,10 @@ impl<T: EventListener> Handler for Term<T> {
             return false;
         }
 
-        if let Some(command) = self.graphics_parser.end() {
+        if let Some(mut command) = self.graphics_parser.end() {
+            if let Ok(command) = &mut command {
+                command.anchor = Some(self.grid.cursor.point);
+            }
             self.graphics_command = Some(command);
             true
         } else {

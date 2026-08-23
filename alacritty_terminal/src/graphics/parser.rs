@@ -1,5 +1,7 @@
 use std::{mem, str};
 
+use crate::index::Point;
+
 pub const MAX_GRAPHICS_CONTROL_BYTES: usize = 4096;
 pub const MAX_GRAPHICS_PAYLOAD_BYTES: usize = 4096;
 
@@ -73,6 +75,7 @@ pub struct Command {
     pub parent_placement_id: Option<u32>,
     pub horizontal_offset: Option<i32>,
     pub vertical_offset: Option<i32>,
+    pub anchor: Option<Point>,
     pub payload: Vec<u8>,
 }
 

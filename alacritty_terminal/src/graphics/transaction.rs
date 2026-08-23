@@ -50,6 +50,7 @@ impl PendingTransmission {
         } else {
             self.command.more = Some(false);
             self.command.quiet = continuation.quiet.or(self.command.quiet);
+            self.command.anchor = continuation.anchor;
             Ok(PendingResult::Complete(GraphicsRequest::Chunked {
                 command: self.command,
                 chunks: self.chunks,
