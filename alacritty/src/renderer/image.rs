@@ -212,6 +212,11 @@ impl ImageRenderer {
         images: &[RenderableImage],
         cache_limit: usize,
     ) {
+        #[cfg(debug_assertions)]
+        if std::env::var_os("ALACRITTY_TEST_DISCARD_IMAGE_TEXTURES").is_some() {
+            self.textures.clear();
+            self.texture_bytes = 0;
+        }
         self.evict_for(0, cache_limit);
         if images.is_empty() || viewport.clip_width <= 0. || viewport.clip_height <= 0. {
             return;

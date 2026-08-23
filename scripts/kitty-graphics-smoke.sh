@@ -71,7 +71,7 @@ done
 [ -n "$socket" ] && [ -n "$wayland" ] || { echo "headless sway did not start" >&2; exit 1; }
 
 XDG_RUNTIME_DIR="$runtime" SWAYSOCK="$socket" WAYLAND_DISPLAY="$wayland" \
-    "$root/target/debug/alacritty" --config-file "$output/alacritty.toml" \
+    ALACRITTY_TEST_DISCARD_IMAGE_TEXTURES=1 "$root/target/debug/alacritty" --config-file "$output/alacritty.toml" \
     >"$output/alacritty.log" 2>&1 &
 echo $! >"$output/alacritty.pid"
 
