@@ -223,8 +223,8 @@ impl GraphicsApcParser {
                 b'Y' => command.y_offset = Some(unsigned()?),
                 b'c' => command.columns = Some(unsigned()?),
                 b'r' => command.rows = Some(unsigned()?),
-                b'C' => command.cursor_policy = Some(unsigned()?),
-                b'U' => command.unicode_placeholder = Some(unsigned()?),
+                b'C' => command.cursor_policy = Some(parse_range(value, 0..=1)?),
+                b'U' => command.unicode_placeholder = Some(parse_range(value, 0..=1)?),
                 b'z' => command.z_index = Some(signed()?),
                 b'P' => command.parent_image_id = Some(unsigned()?),
                 b'Q' => command.parent_placement_id = Some(unsigned()?),
@@ -370,6 +370,8 @@ mod tests {
             b"Ga=x".as_slice(),
             b"Gq=3".as_slice(),
             b"Gm=2".as_slice(),
+            b"GC=2".as_slice(),
+            b"GU=2".as_slice(),
         ] {
             assert_eq!(parse(input), Some(Err(GraphicsError::InvalidControl)), "{input:?}");
         }

@@ -69,6 +69,16 @@ pub fn process_command(
     local_transmission: bool,
 ) -> ProcessedCommand {
     let command = match command {
+        Ok(command)
+            if command.image_id.is_some() && command.image_number.is_some()
+                || command.image_id == Some(0)
+                || command.image_number == Some(0) =>
+        {
+            return ProcessedCommand::Error {
+                command: Some(command),
+                error: GraphicsError::Invalid,
+            };
+        },
         Ok(command) => command,
         Err(error) => return ProcessedCommand::Error { command: None, error },
     };
@@ -265,6 +275,25 @@ mod tests {
     fn preserves_rgba() {
         let image = decoded(direct(Format::Rgba, 1, 1, &[1, 2, 3, 4]), 4).unwrap();
         assert_eq!(image.bytes(), &[1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn rejects_conflicting_and_zero_image_identifiers_for_metadata_commands() {
+        for command in [
+            Command {
+                action: Some(Action::Delete),
+                image_id: Some(1),
+                image_number: Some(2),
+                ..Default::default()
+            },
+            Command { action: Some(Action::Place), image_id: Some(0), ..Default::default() },
+            Command { action: Some(Action::Animate), image_number: Some(0), ..Default::default() },
+        ] {
+            assert!(matches!(process_command(Ok(command), 4, true), ProcessedCommand::Error {
+                error: GraphicsError::Invalid,
+                ..
+            }));
+        }
     }
 
     #[test]
