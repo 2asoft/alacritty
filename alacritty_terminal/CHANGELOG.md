@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## 0.26.1-dev
 
+### Added
+
+- Experimental private-fork Kitty graphics parsing, bounded image decoding, transports, storage, classic placements, and ordered protocol responses
+
 ### Fixed
 
 - Panic when the PTY could not be set to non-blocking
