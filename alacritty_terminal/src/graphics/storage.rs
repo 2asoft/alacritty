@@ -1594,6 +1594,44 @@ mod tests {
     }
 
     #[test]
+    fn loading_animation_resumes_when_a_frame_arrives() {
+        let mut state = GraphicsState::new(12);
+        let image = Command { image_id: Some(1), ..Default::default() };
+        state.store(&image, pixels(1, 4)).unwrap();
+        state
+            .store_frame(
+                &Command { image_id: Some(1), z_index: Some(1), ..Default::default() },
+                pixels(2, 4),
+            )
+            .unwrap();
+        state.place(&image, Point::default()).unwrap();
+        state
+            .control_animation(&Command {
+                image_id: Some(1),
+                width: Some(2),
+                rows: Some(1),
+                z_index: Some(1),
+                ..Default::default()
+            })
+            .unwrap();
+        let start = Instant::now();
+        state.advance_animations(start);
+        state.advance_animations(start + Duration::from_millis(1));
+        state.advance_animations(start + Duration::from_millis(2));
+        state
+            .store_frame(
+                &Command { image_id: Some(1), z_index: Some(1), ..Default::default() },
+                pixels(3, 4),
+            )
+            .unwrap();
+        state.advance_animations(start + Duration::from_millis(3));
+        state.advance_animations(start + Duration::from_millis(4));
+        let handle = state.command_image_handle(&image).unwrap();
+        assert_eq!(state.images[&handle].current_frame, 2);
+        assert_eq!(state.images[&handle].animation_state, AnimationState::Loading);
+    }
+
+    #[test]
     fn gapless_frames_are_skipped_without_a_display_deadline() {
         let mut state = GraphicsState::new(16);
         let image = Command { image_id: Some(1), ..Default::default() };
