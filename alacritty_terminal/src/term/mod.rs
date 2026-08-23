@@ -941,7 +941,8 @@ impl<T> Term<T> {
             *line = cmp::min(*line + lines, region.end - 1);
         }
 
-        // Scroll between origin and bottom
+        // Scroll between origin and bottom.
+        self.graphics.scroll_down(&region, lines);
         self.grid.scroll_down(&region, lines);
         self.mark_fully_damaged();
     }
@@ -961,6 +962,8 @@ impl<T> Term<T> {
         // Scroll selection.
         self.selection = self.selection.take().and_then(|s| s.rotate(self, &region, lines as i32));
 
+        let history_size = self.history_size();
+        self.graphics.scroll_up(&region, lines, history_size);
         self.grid.scroll_up(&region, lines);
 
         // Scroll vi mode cursor.

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::num::NonZeroU32;
 
-use crate::index::Point;
+use crate::index::{Line, Point};
 
 use super::{Command, GraphicsError, ImageHandle, PixelBuffer};
 
@@ -83,6 +83,38 @@ impl Placements {
         self.named.clear();
     }
 
+    pub fn scroll_up(&mut self, region: &std::ops::Range<Line>, lines: usize, history_size: usize) {
+        let lines = lines as i32;
+        let full_screen = region.start == Line(0);
+        self.retain(|placement| {
+            let outside_region = if full_screen {
+                placement.anchor.line >= region.end
+            } else {
+                placement.anchor.line < region.start || placement.anchor.line >= region.end
+            };
+            if outside_region {
+                return true;
+            }
+            placement.anchor.line -= lines;
+            if full_screen {
+                placement.anchor.line >= Line(-(history_size as i32))
+            } else {
+                placement.anchor.line >= region.start
+            }
+        });
+    }
+
+    pub fn scroll_down(&mut self, region: &std::ops::Range<Line>, lines: usize) {
+        let lines = lines as i32;
+        self.retain(|placement| {
+            if placement.anchor.line < region.start || placement.anchor.line >= region.end {
+                return true;
+            }
+            placement.anchor.line += lines;
+            placement.anchor.line < region.end
+        });
+    }
+
     pub fn remove_image(&mut self, image: ImageHandle) {
         let handles: Vec<_> = self
             .entries
@@ -137,6 +169,17 @@ impl Placements {
             self.named.insert(key, handle);
         }
         Ok(handle)
+    }
+
+    fn retain(&mut self, mut keep: impl FnMut(&mut Placement) -> bool) {
+        let removed: Vec<_> = self
+            .entries
+            .iter_mut()
+            .filter_map(|(handle, placement)| (!keep(placement)).then_some(*handle))
+            .collect();
+        for handle in removed {
+            self.remove(handle);
+        }
     }
 
     fn remove(&mut self, handle: PlacementHandle) {

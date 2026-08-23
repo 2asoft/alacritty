@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::num::NonZeroU32;
 
-use crate::index::Point;
+use crate::index::{Line, Point};
 
 use super::{
     Action, Command, GraphicsError, PixelBuffer, Placement, PlacementHandle, Placements,
@@ -127,6 +127,14 @@ impl GraphicsState {
             (graphic.z_index, image_id, graphic.creation_serial)
         });
         renderables
+    }
+
+    pub fn scroll_up(&mut self, region: &std::ops::Range<Line>, lines: usize, history_size: usize) {
+        self.placements.scroll_up(region, lines, history_size);
+    }
+
+    pub fn scroll_down(&mut self, region: &std::ops::Range<Line>, lines: usize) {
+        self.placements.scroll_down(region, lines);
     }
 
     pub fn place(
@@ -320,6 +328,20 @@ mod tests {
 
         assert_ne!(first.image_id, second.image_id);
         assert_eq!(state.newest_by_number(9).unwrap().pixels().bytes(), &[2; 4]);
+    }
+
+    #[test]
+    fn placements_follow_scrollback_and_are_pruned_with_history() {
+        let mut state = GraphicsState::new(4);
+        let command = Command { image_id: Some(1), ..Default::default() };
+        state.store(&command, pixels(1, 4)).unwrap();
+        state.place(&command, Point::new(Line(0), crate::index::Column(2))).unwrap();
+        let region = Line(0)..Line(10);
+
+        state.scroll_up(&region, 1, 2);
+        assert_eq!(state.placements().next().unwrap().anchor().line, Line(-1));
+        state.scroll_up(&region, 2, 2);
+        assert!(state.placements().next().is_none());
     }
 
     #[test]
