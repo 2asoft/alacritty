@@ -262,7 +262,10 @@ impl GraphicsState {
                 line >= top && line < top + rows && column >= left && column < left + columns
             };
             match selector {
-                b'a' => location.line >= visible_lines.start && location.line < visible_lines.end,
+                b'a' => {
+                    top < i64::from(visible_lines.end.0)
+                        && top + rows > i64::from(visible_lines.start.0)
+                },
                 b'i' | b'n' => {
                     Some(placement.image) == explicit_image
                         && placement_id.is_none_or(|id| placement.placement_id == Some(id))

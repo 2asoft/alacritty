@@ -962,6 +962,7 @@ impl<T> Term<T> {
 
             // Reset alternate screen contents.
             self.inactive_grid.reset_region(..);
+            self.inactive_graphics.clear();
         }
 
         mem::swap(&mut self.keyboard_mode_stack, &mut self.inactive_keyboard_mode_stack);
@@ -2059,6 +2060,12 @@ impl<T: EventListener> Handler for Term<T> {
                 self.selection = self.selection.take().filter(|s| !s.intersects_range(range));
             },
             ansi::ClearMode::All => {
+                let visible_lines = Line(0)..Line(screen_lines as i32);
+                let _ = self.graphics.delete(
+                    &GraphicsCommand { action: Some(GraphicsAction::Delete), ..Default::default() },
+                    self.grid.cursor.point,
+                    visible_lines,
+                );
                 if self.mode.contains(TermMode::ALT_SCREEN) {
                     self.grid.reset_region(..);
                 } else {
@@ -2832,6 +2839,26 @@ mod tests {
         let responses = responses.lock().unwrap();
         assert_eq!(responses[0], "\x1b_Gi=31;OK\x1b\\");
         assert!(responses[1].starts_with("\x1b[?"));
+    }
+
+    #[test]
+    fn fresh_alternate_screen_and_clear_all_remove_visible_graphics() {
+        let size = TermSize::new(5, 10);
+        let mut term = Term::new(Config::default(), &size, VoidListener);
+        let command = GraphicsCommand { image_id: Some(1), ..Default::default() };
+        let pixels = || crate::graphics::PixelBuffer::from_rgba(1, 1, Arc::from([1, 2, 3, 4]));
+
+        term.swap_alt();
+        term.graphics.store(&command, pixels()).unwrap();
+        term.graphics.place(&command, Point::default()).unwrap();
+        term.swap_alt();
+        term.swap_alt();
+        assert!(term.graphics.placements().next().is_none());
+
+        term.graphics.store(&command, pixels()).unwrap();
+        term.graphics.place(&command, Point::default()).unwrap();
+        term.clear_screen(ansi::ClearMode::All);
+        assert!(term.graphics.placements().next().is_none());
     }
 
     #[test]
