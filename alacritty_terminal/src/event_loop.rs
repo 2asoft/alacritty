@@ -169,8 +169,9 @@ where
                 self.terminal.lock_unfair().commit_graphics_command(command);
             }
 
-            // Assure we're not blocking the terminal too long unnecessarily.
-            if processed >= MAX_LOCKED_READ {
+            // Assure we're not blocking the terminal too long unnecessarily. Bytes already read
+            // from the PTY must be parsed before returning since they cannot be put back.
+            if should_yield_terminal(processed, unprocessed) {
                 break;
             }
         }
@@ -337,6 +338,10 @@ where
     }
 }
 
+fn should_yield_terminal(processed: usize, unprocessed: usize) -> bool {
+    processed >= MAX_LOCKED_READ && unprocessed == 0
+}
+
 /// Helper type which tracks how much of a buffer has been written.
 struct Writing {
     source: Cow<'static, [u8]>,
@@ -495,5 +500,16 @@ impl<T> PeekableReceiver<T> {
                 res => res.ok(),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn locked_read_never_yields_with_already_read_suffix() {
+        assert!(!should_yield_terminal(MAX_LOCKED_READ, 1));
+        assert!(should_yield_terminal(MAX_LOCKED_READ, 0));
     }
 }
