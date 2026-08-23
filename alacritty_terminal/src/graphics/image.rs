@@ -8,6 +8,8 @@ use png::{ColorType, Decoder, Limits, Transformations};
 
 use super::{Action, Command, Compression, Format, GraphicsError, Transmission, load_transport};
 
+const MAX_PNG_DECODER_OVERHEAD: usize = 1024 * 1024;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PixelBuffer {
     width: u32,
@@ -204,7 +206,7 @@ fn decode_rgba(
 }
 
 fn decode_png(source: &[u8], storage_limit: usize) -> Result<PixelBuffer, GraphicsError> {
-    let limits = Limits { bytes: storage_limit };
+    let limits = Limits { bytes: storage_limit.saturating_add(MAX_PNG_DECODER_OVERHEAD) };
     let mut decoder = Decoder::new_with_limits(Cursor::new(source), limits);
     decoder.set_ignore_text_chunk(true);
     decoder.set_transformations(Transformations::EXPAND | Transformations::STRIP_16);
@@ -269,6 +271,22 @@ mod tests {
         }
     }
 
+    fn png(color: ColorType, depth: png::BitDepth, data: &[u8]) -> Vec<u8> {
+        let mut output = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut output, 1, 1);
+            encoder.set_color(color);
+            encoder.set_depth(depth);
+            if color == ColorType::Indexed {
+                encoder.set_palette(vec![10, 20, 30]);
+                encoder.set_trns(vec![40]);
+            }
+            let mut writer = encoder.write_header().unwrap();
+            writer.write_image_data(data).unwrap();
+        }
+        output
+    }
+
     fn decoded(command: Command, limit: usize) -> Result<PixelBuffer, GraphicsError> {
         match process_command(Ok(command), limit, true) {
             ProcessedCommand::Decoded { image, .. } => Ok(image),
@@ -324,6 +342,29 @@ mod tests {
         command.compression = Some(Compression::Zlib);
         let image = decoded(command, 4).unwrap();
         assert_eq!(image.bytes(), &[1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn normalizes_ordinary_png_color_types_and_depths() {
+        for (color, depth, source, expected) in [
+            (ColorType::Grayscale, png::BitDepth::Eight, vec![12], vec![12, 12, 12, 255]),
+            (ColorType::GrayscaleAlpha, png::BitDepth::Eight, vec![12, 34], vec![12, 12, 12, 34]),
+            (ColorType::Rgb, png::BitDepth::Eight, vec![1, 2, 3], vec![1, 2, 3, 255]),
+            (ColorType::Rgba, png::BitDepth::Eight, vec![1, 2, 3, 4], vec![1, 2, 3, 4]),
+            (ColorType::Indexed, png::BitDepth::Eight, vec![0], vec![10, 20, 30, 40]),
+            (ColorType::Grayscale, png::BitDepth::Sixteen, vec![128, 0], vec![128, 128, 128, 255]),
+        ] {
+            let decoded = decode_png(&png(color, depth, &source), 4)
+                .unwrap_or_else(|error| panic!("failed {color:?} {depth:?}: {error:?}"));
+            assert_eq!(decoded.bytes(), expected);
+        }
+    }
+
+    #[test]
+    fn decodes_interlaced_palette_png_fixture() {
+        let source = include_bytes!("../../tests/fixtures/kitty/interlaced.png");
+        let decoded = decode_png(source, 16).unwrap();
+        assert_eq!((decoded.width(), decoded.height(), decoded.storage_bytes()), (2, 2, 16));
     }
 
     #[test]
