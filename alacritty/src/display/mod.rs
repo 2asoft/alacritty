@@ -806,6 +806,21 @@ impl Display {
         config: &UiConfig,
         search_state: &mut SearchState,
     ) {
+        let window_id = self.window.id();
+        let animation_timer = TimerId::new(Topic::GraphicsAnimation, window_id);
+        scheduler.unschedule(animation_timer);
+        if let Some(interval) = terminal.advance_graphics_animations(Instant::now()) {
+            scheduler.schedule(
+                Event::new(
+                    EventType::Terminal(alacritty_terminal::event::Event::Wakeup),
+                    window_id,
+                ),
+                interval,
+                false,
+                animation_timer,
+            );
+        }
+
         // Collect renderable content before the terminal is dropped.
         let mut content = RenderableContent::new(config, self, &terminal, search_state);
         let mut grid_cells = Vec::new();

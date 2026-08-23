@@ -755,6 +755,15 @@ impl<T> Term<T> {
         T: EventListener,
     {
         match processed {
+            ProcessedCommand::Decoded { command, image }
+                if command.action == Some(GraphicsAction::TransmitFrame) =>
+            {
+                let result = self
+                    .graphics
+                    .store_frame(&command, image)
+                    .map(|_| std::num::NonZeroU32::new(command.image_id.unwrap_or(0)));
+                self.graphics_response(&command, result);
+            },
             ProcessedCommand::Decoded { command, image } => {
                 let result = self.graphics.store(&command, image).and_then(|outcome| {
                     if command.action == Some(GraphicsAction::TransmitAndPlace) {
@@ -785,6 +794,18 @@ impl<T> Term<T> {
                         self.advance_graphics_cursor(&command);
                     }
                     self.graphics_response(&command, result);
+                } else if command.action == Some(GraphicsAction::Animate) {
+                    let result = self
+                        .graphics
+                        .control_animation(&command)
+                        .map(|_| std::num::NonZeroU32::new(command.image_id.unwrap_or(0)));
+                    self.graphics_response(&command, result);
+                } else if command.action == Some(GraphicsAction::ComposeFrame) {
+                    let result = self
+                        .graphics
+                        .compose_frames(&command)
+                        .map(|_| std::num::NonZeroU32::new(command.image_id.unwrap_or(0)));
+                    self.graphics_response(&command, result);
                 } else if command.more != Some(true) {
                     self.graphics_response(&command, Err(GraphicsError::Unsupported));
                 }
@@ -812,6 +833,13 @@ impl<T> Term<T> {
         let rows = usize::try_from(command.rows.unwrap_or(0)).unwrap_or(usize::MAX);
         self.move_forward(columns);
         self.move_down(rows);
+    }
+
+    pub fn advance_graphics_animations(
+        &mut self,
+        now: std::time::Instant,
+    ) -> Option<std::time::Duration> {
+        self.graphics.advance_animations(now)
     }
 
     /// Graphics state paired with the active grid.

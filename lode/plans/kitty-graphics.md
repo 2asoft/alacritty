@@ -15,6 +15,7 @@ Implement the complete Kitty terminal graphics protocol described by the accepte
 - Basic classic transmit-and-place and place-existing commands create independent placements. Successful placements with explicit cell spans advance the cursor unless suppressed; virtual and relative placements never move it. Native-pixel and inferred-span cursor geometry remains pending. The OpenGL renderer caches textures and draws crop/scaled RGBA content. Classic anchors follow full-screen and region scrolling and are removed when retained history prunes them. Width reflow tracking, region clipping, protocol z strata, texture tiling, animation-frame deletion, and cache budgets remain pending. Classic deletion supports current placement/image selectors and aborts incomplete chunk streams.
 - Virtual placements and explicit/inherited Unicode placeholder cells render from the authoritative generated diacritic table. Location-based deletion excludes virtual placements. Exhaustive placeholder inheritance conformance remains pending.
 - Relative placements resolve classic and virtual parents, enforce an eight-link depth bound, reject missing parents and cycles atomically, follow parent movement, and cascade deletion and replacement lifetimes.
+- Animation frames load as quota-counted canonical RGBA canvases, support frame editing and alpha/overwrite composition, client-selected frames, stop/loading/run states, loop limits, frame gaps, frame deletion, and UI-scheduled playback deadlines. Broader animation corpus and stress validation remain pending.
 - Primary grid width changes reflow cells in `alacritty_terminal/src/grid/resize.rs`; no external points participate.
 - Terminal renderable state is collected under lock, while OpenGL work occurs after lock release.
 
@@ -39,7 +40,7 @@ Implement the complete Kitty terminal graphics protocol described by the accepte
 7. [ ] Add bounded regular-file, temporary-file, and shared-memory transports behind configuration.
 8. [ ] Implement Unicode placeholders from authoritative generated combining-mark data.
 9. [x] Implement relative placement graph semantics.
-10. [ ] Implement animation frame loading, composition, control, deletion, and deadline scheduling.
+10. [x] Implement animation frame loading, composition, control, deletion, and deadline scheduling.
 11. [ ] Complete hostile-input, property, fuzz, renderer-golden, context-loss, and performance validation; enable by default.
 
 Each goal stops only after its focused tests, adjacent suites, formatting, linting, docs, and Lode state pass. Commit verified coherent increments separately.

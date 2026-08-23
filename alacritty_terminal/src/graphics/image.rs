@@ -16,6 +16,24 @@ pub struct PixelBuffer {
 }
 
 impl PixelBuffer {
+    pub(crate) fn new_rgba(
+        width: u32,
+        height: u32,
+        bytes: Arc<[u8]>,
+    ) -> Result<Self, GraphicsError> {
+        let expected = usize::try_from(width)
+            .ok()
+            .and_then(|width| {
+                usize::try_from(height).ok().and_then(|height| width.checked_mul(height))
+            })
+            .and_then(|pixels| pixels.checked_mul(4))
+            .ok_or(GraphicsError::TooLarge)?;
+        if bytes.len() != expected {
+            return Err(GraphicsError::Invalid);
+        }
+        Ok(Self { width, height, bytes })
+    }
+
     #[cfg(test)]
     pub(crate) fn from_rgba(width: u32, height: u32, bytes: Arc<[u8]>) -> Self {
         Self { width, height, bytes }
