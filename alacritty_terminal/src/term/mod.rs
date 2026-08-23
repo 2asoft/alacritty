@@ -14,7 +14,10 @@ use log::{debug, trace};
 use unicode_width::UnicodeWidthChar;
 
 use crate::event::{Event, EventListener};
-use crate::graphics::{Command as GraphicsCommand, GraphicsApcParser, GraphicsError};
+use crate::graphics::{
+    Action as GraphicsAction, Command as GraphicsCommand, GraphicsApcParser, GraphicsError,
+    GraphicsState, ProcessedCommand,
+};
 use crate::grid::{Dimensions, Grid, GridIterator, Scroll};
 use crate::index::{self, Boundary, Column, Direction, Line, Point, Side};
 use crate::selection::{Selection, SelectionRange, SelectionType};
@@ -334,6 +337,12 @@ pub struct Term<T> {
 
     /// Completed command waiting at the ordered PTY parser barrier.
     graphics_command: Option<Result<GraphicsCommand, GraphicsError>>,
+
+    /// Graphics state paired with the active grid.
+    graphics: GraphicsState,
+
+    /// Graphics state paired with the inactive grid.
+    inactive_graphics: GraphicsState,
 }
 
 /// Configuration options for the [`Term`].
@@ -442,6 +451,7 @@ impl<T> Term<T> {
         let num_lines = dimensions.screen_lines();
 
         let history_size = config.scrolling_history;
+        let graphics_storage_limit = config.graphics.storage_limit;
         let grid = Grid::new(num_lines, num_cols, history_size);
         let inactive_grid = Grid::new(num_lines, num_cols, 0);
 
@@ -473,6 +483,8 @@ impl<T> Term<T> {
             mode: Default::default(),
             graphics_parser: Default::default(),
             graphics_command: None,
+            graphics: GraphicsState::new(graphics_storage_limit),
+            inactive_graphics: GraphicsState::new(graphics_storage_limit),
         }
     }
 
@@ -553,9 +565,13 @@ impl<T> Term<T> {
             self.mode.remove(TermMode::KITTY_KEYBOARD_PROTOCOL);
         }
 
+        self.graphics.set_storage_limit(self.config.graphics.storage_limit);
+        self.inactive_graphics.set_storage_limit(self.config.graphics.storage_limit);
         if old_config.graphics.enabled && !self.config.graphics.enabled {
             self.graphics_parser.abort();
             self.graphics_command = None;
+            self.graphics.clear();
+            self.inactive_graphics.clear();
         }
 
         // Damage everything on config updates.
@@ -683,6 +699,74 @@ impl<T> Term<T> {
         self.graphics_command.take()
     }
 
+    /// Options required to process a deferred graphics command outside the terminal lock.
+    pub fn graphics_processing_options(&self) -> (usize, bool) {
+        (self.config.graphics.storage_limit, self.config.graphics.local_transmission)
+    }
+
+    /// Commit a graphics command processed outside the terminal lock.
+    pub fn commit_graphics_command(&mut self, processed: ProcessedCommand)
+    where
+        T: EventListener,
+    {
+        match processed {
+            ProcessedCommand::Decoded { command, image } => {
+                let result = self.graphics.store(&command, image);
+                self.graphics_response(&command, result.map(|outcome| outcome.image_id));
+            },
+            ProcessedCommand::Metadata(command) => {
+                if command.more != Some(true) {
+                    self.graphics_response(&command, Err(GraphicsError::Unsupported));
+                }
+            },
+            ProcessedCommand::Error { command: Some(command), error } => {
+                self.graphics_response(&command, Err(error));
+            },
+            ProcessedCommand::Error { command: None, .. } => (),
+        }
+        self.mark_fully_damaged();
+    }
+
+    /// Graphics state paired with the active grid.
+    pub fn graphics(&self) -> &GraphicsState {
+        &self.graphics
+    }
+
+    fn graphics_response(
+        &self,
+        command: &GraphicsCommand,
+        result: Result<Option<std::num::NonZeroU32>, GraphicsError>,
+    ) where
+        T: EventListener,
+    {
+        let should_respond = command.action == Some(GraphicsAction::Query)
+            || command.image_id.unwrap_or(0) != 0
+            || command.image_number.is_some();
+        if !should_respond {
+            return;
+        }
+
+        let quiet = command.quiet.unwrap_or(0);
+        let message = match result {
+            Ok(_) if quiet >= 1 => return,
+            Ok(_) => "OK",
+            Err(_) if quiet >= 2 => return,
+            Err(error) => error.protocol_code(),
+        };
+        let image_id = result.ok().flatten().map(u32::from).or(command.image_id).unwrap_or(0);
+        let mut response = format!("\x1b_Gi={image_id}");
+        if let Some(number) = command.image_number {
+            response.push_str(&format!(",I={number}"));
+        }
+        if let Some(placement) = command.placement_id.filter(|placement| *placement != 0) {
+            response.push_str(&format!(",p={placement}"));
+        }
+        response.push(';');
+        response.push_str(message);
+        response.push_str("\x1b\\");
+        self.event_proxy.send_event(Event::PtyWrite(response));
+    }
+
     /// Access to the raw grid data structure.
     pub fn grid(&self) -> &Grid<Cell> {
         &self.grid
@@ -771,6 +855,7 @@ impl<T> Term<T> {
         self.set_keyboard_mode(keyboard_mode, KeyboardModesApplyBehavior::Replace);
 
         mem::swap(&mut self.grid, &mut self.inactive_grid);
+        mem::swap(&mut self.graphics, &mut self.inactive_graphics);
         self.mode ^= TermMode::ALT_SCREEN;
         self.selection = None;
         self.mark_fully_damaged();
@@ -1916,6 +2001,10 @@ impl<T: EventListener> Handler for Term<T> {
         self.vi_mode_cursor = Default::default();
         self.keyboard_mode_stack = Default::default();
         self.inactive_keyboard_mode_stack = Default::default();
+        self.graphics.clear();
+        self.inactive_graphics.clear();
+        self.graphics_parser.abort();
+        self.graphics_command = None;
 
         // Preserve vi mode across resets.
         self.mode &= TermMode::VI;
@@ -2577,6 +2666,7 @@ mod tests {
     use super::*;
 
     use std::mem;
+    use std::sync::{Arc, Mutex};
 
     use crate::event::VoidListener;
     use crate::grid::{Grid, Scroll};
@@ -2585,6 +2675,43 @@ mod tests {
     use crate::term::cell::{Cell, Flags};
     use crate::term::test::TermSize;
     use crate::vte::ansi::{self, CharsetIndex, Handler, StandardCharset};
+
+    #[derive(Clone, Default)]
+    struct RecordingListener(Arc<Mutex<Vec<String>>>);
+
+    impl EventListener for RecordingListener {
+        fn send_event(&self, event: Event) {
+            if let Event::PtyWrite(response) = event {
+                self.0.lock().unwrap().push(response);
+            }
+        }
+    }
+
+    #[test]
+    fn kitty_query_response_precedes_later_device_attributes() {
+        let size = TermSize::new(5, 10);
+        let config = Config {
+            graphics: GraphicsConfig { enabled: true, ..Default::default() },
+            ..Default::default()
+        };
+        let listener = RecordingListener::default();
+        let responses = listener.0.clone();
+        let mut term = Term::new(config, &size, listener);
+        let mut parser = ansi::Processor::<ansi::StdSyncHandler>::new();
+        let input = b"\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[c";
+
+        let consumed = parser.advance_until_terminated(&mut term, input);
+        let command = term.take_graphics_command().unwrap();
+        let options = term.graphics_processing_options();
+        term.commit_graphics_command(crate::graphics::process_command(
+            command, options.0, options.1,
+        ));
+        parser.advance(&mut term, &input[consumed..]);
+
+        let responses = responses.lock().unwrap();
+        assert_eq!(responses[0], "\x1b_Gi=31;OK\x1b\\");
+        assert!(responses[1].starts_with("\x1b[?"));
+    }
 
     #[test]
     fn kitty_apc_stops_parser_at_command_boundary() {

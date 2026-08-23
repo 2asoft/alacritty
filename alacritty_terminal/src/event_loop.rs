@@ -15,6 +15,7 @@ use log::error;
 use polling::{Event as PollingEvent, Events, PollMode, Poller};
 
 use crate::event::{self, Event, EventListener, WindowSize};
+use crate::graphics::process_command;
 use crate::sync::FairMutex;
 use crate::term::Term;
 use crate::{thread, tty};
@@ -111,6 +112,7 @@ where
         X: Write,
     {
         let mut unprocessed = 0;
+        let mut recorded = 0;
         let mut processed = 0;
 
         // Reserve the next terminal lock for PTY reading.
@@ -135,7 +137,7 @@ where
             }
 
             // Attempt to lock the terminal.
-            let terminal = match &mut terminal {
+            let terminal_guard = match &mut terminal {
                 Some(terminal) => terminal,
                 None => terminal.insert(match self.terminal.try_lock_unfair() {
                     // Force block if we are at the buffer size limit.
@@ -145,16 +147,27 @@ where
                 }),
             };
 
-            // Write a copy of the bytes to the ref test file.
+            // Write newly read bytes to the ref test file exactly once.
             if let Some(writer) = &mut writer {
-                writer.write_all(&buf[..unprocessed]).unwrap();
+                writer.write_all(&buf[recorded..unprocessed]).unwrap();
             }
 
-            // Parse the incoming bytes.
-            state.parser.advance(&mut **terminal, &buf[..unprocessed]);
+            // Stop at graphics command barriers and retain the unconsumed suffix.
+            let consumed =
+                state.parser.advance_until_terminated(&mut **terminal_guard, &buf[..unprocessed]);
+            let command = terminal_guard.take_graphics_command();
+            let graphics_options = terminal_guard.graphics_processing_options();
+            processed += consumed;
+            buf.copy_within(consumed..unprocessed, 0);
+            unprocessed -= consumed;
+            recorded = unprocessed;
 
-            processed += unprocessed;
-            unprocessed = 0;
+            if let Some(command) = command {
+                // Heavy payload processing must not hold the terminal mutex.
+                terminal = None;
+                let command = process_command(command, graphics_options.0, graphics_options.1);
+                self.terminal.lock_unfair().commit_graphics_command(command);
+            }
 
             // Assure we're not blocking the terminal too long unnecessarily.
             if processed >= MAX_LOCKED_READ {

@@ -81,6 +81,27 @@ pub enum GraphicsError {
     InvalidControl,
     ControlTooLarge,
     PayloadTooLarge,
+    Invalid,
+    TooLarge,
+    NoSpace,
+    Decode,
+    Unsupported,
+    LocalTransmissionDisabled,
+    NotFound,
+}
+
+impl GraphicsError {
+    pub fn protocol_code(self) -> &'static str {
+        match self {
+            Self::InvalidControl | Self::Invalid => "EINVAL",
+            Self::ControlTooLarge | Self::PayloadTooLarge | Self::TooLarge => "E2BIG",
+            Self::NoSpace => "ENOSPC",
+            Self::Decode => "EBADPNG",
+            Self::Unsupported => "ENOTSUP",
+            Self::LocalTransmissionDisabled => "EACCES",
+            Self::NotFound => "ENOENT",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
