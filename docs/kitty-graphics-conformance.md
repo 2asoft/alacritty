@@ -36,7 +36,8 @@ The protocol defines required behavior. External tests identify scenarios and ex
 | Animation | Root editing, gap preservation, frame-number replies, and root promotion | Covered |
 | Animation | Frame deletion edge cases and excess-data behavior | Partial |
 | Quota | Canonical bytes, reservations, metadata, and deterministic eviction | Covered |
-| Quota | Transient usage hint affects eviction priority | Gap |
+| Quota | Transient and unplaced images receive deterministic eviction priority | Covered |
+| Quota | Non-visible placements are evicted before visible placements | Gap |
 | Renderer | Z strata, transparent-edge filtering, placeholder transparency, and GL-state isolation | Covered |
 | Renderer | Hardware-sized tiling, bounded cache, and texture reconstruction | Covered |
 | Robustness | Stateful fuzzing, random state invariants, and ordinary-text benchmark | Covered |

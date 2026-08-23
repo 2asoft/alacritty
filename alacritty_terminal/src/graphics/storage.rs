@@ -42,6 +42,8 @@ pub struct Image {
     next_frame_at: Option<Instant>,
     content_generation: u64,
     creation_serial: u64,
+    last_used_serial: u64,
+    transient: bool,
 }
 
 impl Image {
@@ -485,12 +487,19 @@ impl GraphicsState {
         anchor: Point,
         span: (u32, u32),
     ) -> Result<PlacementInsert, GraphicsError> {
+        let serial = self.serial.checked_add(1).ok_or(GraphicsError::TooLarge)?;
+        if !self.images.contains_key(&handle) {
+            return Err(GraphicsError::NotFound);
+        }
         let mut placement = command.clone();
         if command.unicode_placeholder.unwrap_or(0) != 0 {
             placement.columns = Some(span.0);
             placement.rows = Some(span.1);
         }
-        self.placements.insert(handle, image_id, &placement, anchor, span)
+        let inserted = self.placements.insert(handle, image_id, &placement, anchor, span)?;
+        self.serial = serial;
+        self.images.get_mut(&handle).ok_or(GraphicsError::NotFound)?.last_used_serial = serial;
+        Ok(inserted)
     }
 
     fn finish_placement_insert(
@@ -910,6 +919,8 @@ impl GraphicsState {
             next_frame_at: None,
             content_generation: self.serial,
             creation_serial: self.serial,
+            last_used_serial: self.serial,
+            transient: command.usage == Some(1),
         };
         self.used_bytes = self
             .used_bytes
@@ -945,7 +956,16 @@ impl GraphicsState {
                 .images
                 .values()
                 .filter(|image| Some(image.handle) != excluded)
-                .min_by_key(|image| (image.creation_serial, image.handle.0))
+                .min_by_key(|image| {
+                    let placed = self.placements.image_is_placed(image.handle);
+                    let priority = match (placed, image.transient) {
+                        (false, true) => 0,
+                        (false, false) => 1,
+                        (true, true) => 2,
+                        (true, false) => 3,
+                    };
+                    (priority, image.last_used_serial, image.creation_serial, image.handle.0)
+                })
                 .map(|image| image.handle);
             match candidate {
                 Some(handle) => self.remove(handle),
@@ -1886,6 +1906,24 @@ mod tests {
             .unwrap();
         assert!(state.placements().next().is_none());
         assert!(state.image_by_id(NonZeroU32::new(2).unwrap()).is_none());
+    }
+
+    #[test]
+    fn eviction_prioritizes_transient_and_unplaced_images() {
+        let mut state = GraphicsState::new(8);
+        let first = Command { image_id: Some(1), ..Default::default() };
+        let transient = Command { image_id: Some(2), usage: Some(1), ..Default::default() };
+        state.store(&first, pixels(1, 4)).unwrap();
+        state.store(&transient, pixels(2, 4)).unwrap();
+        state.store(&Command { image_id: Some(3), ..Default::default() }, pixels(3, 4)).unwrap();
+        assert!(state.image_by_id(NonZeroU32::new(1).unwrap()).is_some());
+        assert!(state.image_by_id(NonZeroU32::new(2).unwrap()).is_none());
+
+        state.place(&first, Point::default()).unwrap();
+        state.store(&Command { image_id: Some(4), ..Default::default() }, pixels(4, 4)).unwrap();
+        assert!(state.image_by_id(NonZeroU32::new(1).unwrap()).is_some());
+        assert!(state.image_by_id(NonZeroU32::new(3).unwrap()).is_none());
+        assert_invariants(&state);
     }
 
     #[test]
