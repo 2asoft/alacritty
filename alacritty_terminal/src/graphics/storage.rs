@@ -340,7 +340,7 @@ impl GraphicsState {
                 b'y' => cell.1 >= top && cell.1 < top + rows,
                 b'z' => placement.z_index == command.z_index.unwrap_or(0),
                 b'r' => placement.image_id.is_some_and(|id| {
-                    id.get() >= command.x.unwrap_or(0) && id.get() <= command.y.unwrap_or(u32::MAX)
+                    id.get() >= command.x.unwrap_or(0) && id.get() <= command.y.unwrap_or(0)
                 }),
                 _ => false,
             }
@@ -364,8 +364,7 @@ impl GraphicsState {
                     .image_ids
                     .iter()
                     .filter(|(id, _)| {
-                        id.get() >= command.x.unwrap_or(0)
-                            && id.get() <= command.y.unwrap_or(u32::MAX)
+                        id.get() >= command.x.unwrap_or(0) && id.get() <= command.y.unwrap_or(0)
                     })
                     .map(|(_, handle)| *handle)
                     .collect();
@@ -1533,6 +1532,18 @@ mod tests {
         assert_eq!(first.image_id, NonZeroU32::new(1));
         assert_eq!(second.image_id, NonZeroU32::new(2));
         assert_eq!(state.newest_by_number(9).unwrap().pixels().bytes(), &[2; 4]);
+        state
+            .delete(
+                &Command {
+                    delete: Some(crate::graphics::DeleteTarget(b'N')),
+                    image_number: Some(9),
+                    ..Default::default()
+                },
+                Point::default(),
+                Line(0)..Line(1),
+            )
+            .unwrap();
+        assert_eq!(state.newest_by_number(9).unwrap().pixels().bytes(), &[1; 4]);
 
         state
             .delete(
@@ -1610,6 +1621,115 @@ mod tests {
         let hard = Command { delete: Some(crate::graphics::DeleteTarget(b'I')), ..soft };
         state.delete(&hard, Point::default(), visible).unwrap();
         assert!(state.image_by_id(id).is_none());
+    }
+
+    #[test]
+    fn deletion_selectors_cover_visibility_coordinates_z_and_ranges() {
+        let setup = || {
+            let mut state = GraphicsState::new(16);
+            for id in 1..=4 {
+                let image = Command { image_id: Some(id), ..Default::default() };
+                state.store(&image, pixels(id as u8, 4)).unwrap();
+                if id != 3 {
+                    state
+                        .place(
+                            &Command {
+                                placement_id: Some(1),
+                                columns: Some(if id == 1 { 3 } else { 2 }),
+                                rows: Some(if id == 1 { 3 } else { 2 }),
+                                z_index: Some(if id == 1 { 5 } else { 7 }),
+                                ..image
+                            },
+                            if id == 1 {
+                                Point::new(Line(0), crate::index::Column(0))
+                            } else if id == 2 {
+                                Point::new(Line(5), crate::index::Column(5))
+                            } else {
+                                Point::new(Line(-2), crate::index::Column(0))
+                            },
+                        )
+                        .unwrap();
+                }
+            }
+            state
+        };
+        let visible = Line(0)..Line(10);
+
+        for (selector, cursor, x, y, z, remaining_id, remaining_count) in [
+            (b'c', Point::new(Line(1), crate::index::Column(1)), None, None, None, 2, 2),
+            (b'p', Point::default(), Some(6), Some(6), None, 1, 2),
+            (b'q', Point::default(), Some(2), Some(2), Some(5), 2, 2),
+            (b'x', Point::default(), Some(2), None, None, 2, 1),
+            (b'y', Point::default(), None, Some(6), None, 1, 2),
+            (b'z', Point::default(), None, None, Some(7), 1, 1),
+        ] {
+            let mut state = setup();
+            state
+                .delete(
+                    &Command {
+                        delete: Some(crate::graphics::DeleteTarget(selector)),
+                        x,
+                        y,
+                        z_index: z,
+                        ..Default::default()
+                    },
+                    cursor,
+                    visible.clone(),
+                )
+                .unwrap();
+            let ids: Vec<_> =
+                state.placements().filter_map(|placement| placement.image_id).collect();
+            assert!(
+                ids.contains(&NonZeroU32::new(remaining_id).unwrap()),
+                "selector {}",
+                selector as char
+            );
+            assert_eq!(ids.len(), remaining_count, "selector {}", selector as char);
+        }
+
+        let mut state = setup();
+        state
+            .delete(
+                &Command {
+                    delete: Some(crate::graphics::DeleteTarget(b'A')),
+                    ..Default::default()
+                },
+                Point::default(),
+                visible.clone(),
+            )
+            .unwrap();
+        assert!(state.image_by_id(NonZeroU32::new(1).unwrap()).is_none());
+        assert!(state.image_by_id(NonZeroU32::new(2).unwrap()).is_none());
+        assert!(state.image_by_id(NonZeroU32::new(3).unwrap()).is_some());
+        assert!(state.image_by_id(NonZeroU32::new(4).unwrap()).is_some());
+
+        let mut state = setup();
+        state
+            .delete(
+                &Command {
+                    delete: Some(crate::graphics::DeleteTarget(b'R')),
+                    ..Default::default()
+                },
+                Point::default(),
+                visible.clone(),
+            )
+            .unwrap();
+        assert_eq!(state.images().count(), 4);
+        state
+            .delete(
+                &Command {
+                    delete: Some(crate::graphics::DeleteTarget(b'R')),
+                    y: Some(2),
+                    ..Default::default()
+                },
+                Point::default(),
+                visible,
+            )
+            .unwrap();
+        assert!(state.image_by_id(NonZeroU32::new(1).unwrap()).is_none());
+        assert!(state.image_by_id(NonZeroU32::new(2).unwrap()).is_none());
+        assert!(state.image_by_id(NonZeroU32::new(3).unwrap()).is_some());
+        assert_invariants(&state);
     }
 
     #[test]
