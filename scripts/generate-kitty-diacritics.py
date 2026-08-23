@@ -28,11 +28,11 @@ def main() -> None:
         [
             "];",
             "",
-            "pub fn diacritic_index(value: char) -> Option<u8> {",
+            "pub fn diacritic_index(value: char) -> Option<u16> {",
             "    ROW_COLUMN_DIACRITICS",
             "        .iter()",
             "        .position(|candidate| *candidate == value)",
-            "        .and_then(|index| u8::try_from(index).ok())",
+            "        .and_then(|index| u16::try_from(index).ok())",
             "}",
             "",
         ]

@@ -9,8 +9,8 @@ pub const PLACEHOLDER: char = '\u{10eeee}';
 pub struct PlaceholderCell {
     pub image_id: u32,
     pub placement_id: u32,
-    pub row: u8,
-    pub column: u8,
+    pub row: u16,
+    pub column: u16,
     foreground: Color,
     underline: Option<Color>,
 }
@@ -27,9 +27,18 @@ pub fn decode_placeholder(
     let low_image_id = color_id(foreground)?;
     let placement_id = underline.and_then(color_id).unwrap_or(0);
     let marks = cell.zerowidth().unwrap_or_default();
-    let row = marks.first().copied().and_then(diacritic_index);
-    let column = marks.get(1).copied().and_then(diacritic_index);
-    let high = marks.get(2).copied().and_then(diacritic_index);
+    let row = match marks.first() {
+        Some(mark) => Some(diacritic_index(*mark)?),
+        None => None,
+    };
+    let column = match marks.get(1) {
+        Some(mark) => Some(diacritic_index(*mark)?),
+        None => None,
+    };
+    let high = match marks.get(2) {
+        Some(mark) => Some(u8::try_from(diacritic_index(*mark)?).ok()?),
+        None => None,
+    };
     let same_identity = previous
         .filter(|previous| previous.foreground == foreground && previous.underline == underline);
 
@@ -78,6 +87,7 @@ fn color_id(color: Color) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::graphics::rowcolumn_diacritics::ROW_COLUMN_DIACRITICS;
     use crate::vte::ansi::Rgb;
 
     fn cell(image: Color, marks: &[char]) -> Cell {
@@ -103,6 +113,61 @@ mod tests {
         let second = cell(Color::Indexed(42), &[]);
         let second = decode_placeholder(&second, Some(first)).unwrap();
         assert_eq!((second.row, second.column), (1, 1));
+    }
+
+    #[test]
+    fn applies_all_protocol_inheritance_conditions() {
+        let identity = Color::Indexed(42);
+        let first = cell(identity, &[
+            ROW_COLUMN_DIACRITICS[0],
+            ROW_COLUMN_DIACRITICS[0],
+            ROW_COLUMN_DIACRITICS[2],
+        ]);
+        let first = decode_placeholder(&first, None).unwrap();
+
+        let inherited = decode_placeholder(&cell(identity, &[]), Some(first)).unwrap();
+        assert_eq!((inherited.row, inherited.column, inherited.image_id >> 24), (0, 1, 2));
+        let row_only =
+            decode_placeholder(&cell(identity, &[ROW_COLUMN_DIACRITICS[0]]), Some(first)).unwrap();
+        assert_eq!((row_only.column, row_only.image_id >> 24), (1, 2));
+        let adjacent = decode_placeholder(
+            &cell(identity, &[ROW_COLUMN_DIACRITICS[0], ROW_COLUMN_DIACRITICS[1]]),
+            Some(first),
+        )
+        .unwrap();
+        assert_eq!(adjacent.image_id >> 24, 2);
+        let nonadjacent = decode_placeholder(
+            &cell(identity, &[ROW_COLUMN_DIACRITICS[0], ROW_COLUMN_DIACRITICS[2]]),
+            Some(first),
+        )
+        .unwrap();
+        assert_eq!(nonadjacent.image_id >> 24, 0);
+        let different_row =
+            decode_placeholder(&cell(identity, &[ROW_COLUMN_DIACRITICS[1]]), Some(first)).unwrap();
+        assert_eq!((different_row.column, different_row.image_id >> 24), (0, 0));
+        let different_identity =
+            decode_placeholder(&cell(Color::Indexed(43), &[ROW_COLUMN_DIACRITICS[0]]), Some(first))
+                .unwrap();
+        assert_eq!((different_identity.column, different_identity.image_id >> 24), (0, 0));
+        let mut different_underline = cell(identity, &[]);
+        different_underline.set_underline_color(Some(Color::Indexed(1)));
+        assert!(decode_placeholder(&different_underline, Some(first)).is_none());
+    }
+
+    #[test]
+    fn supports_entire_row_and_column_table_but_bounds_high_byte() {
+        let final_mark = ROW_COLUMN_DIACRITICS[296];
+        let endpoint = cell(Color::Indexed(1), &[final_mark, final_mark]);
+        let placeholder = decode_placeholder(&endpoint, None).unwrap();
+        assert_eq!((placeholder.row, placeholder.column), (296, 296));
+
+        let oversized_high = cell(Color::Indexed(1), &[
+            ROW_COLUMN_DIACRITICS[0],
+            ROW_COLUMN_DIACRITICS[0],
+            ROW_COLUMN_DIACRITICS[256],
+        ]);
+        assert!(decode_placeholder(&oversized_high, None).is_none());
+        assert!(decode_placeholder(&cell(Color::Indexed(1), &['\u{301}']), None).is_none());
     }
 
     #[test]
