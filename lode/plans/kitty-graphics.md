@@ -31,7 +31,7 @@ Implement the complete Kitty terminal graphics protocol described by the accepte
 
 ## Ordered goals
 
-1. [ ] Add fixtures and protocol-state test infrastructure.
+1. [x] Add fixtures and protocol-state test infrastructure.
 2. [x] Expose bounded streaming APC callbacks through a pinned `vte` fork and cover termination/cancellation splits.
 3. [x] Add ordered partial parser consumption and deferred transaction barriers.
 4. [x] Implement typed command parsing, direct RGB/RGBA/PNG/zlib transfer, IDs, queries, and quotas.
@@ -41,7 +41,7 @@ Implement the complete Kitty terminal graphics protocol described by the accepte
 8. [x] Implement Unicode placeholders from authoritative generated combining-mark data.
 9. [x] Implement relative placement graph semantics.
 10. [x] Implement animation frame loading, composition, control, deletion, and deadline scheduling.
-11. [ ] Complete hostile-input, property, fuzz, renderer-golden, context-loss, and performance validation; enable by default.
+11. [ ] Complete hostile-input, property, fuzz, renderer-golden, context-loss, and performance validation; enable by default. Stateful stream fuzzing and an isolated repeated-redraw screenshot smoke harness are in place.
 
 Each goal stops only after its focused tests, adjacent suites, formatting, linting, docs, and Lode state pass. Commit verified coherent increments separately.
 
