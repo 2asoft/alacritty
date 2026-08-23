@@ -7,8 +7,8 @@ use crate::index::{Line, Point};
 
 use super::{
     Action, AnimationFrame, AnimationState, Command, DEFAULT_FRAME_GAP_MS, FrameComposition,
-    GraphicsError, MAX_FRAMES_PER_IMAGE, PixelBuffer, Placement, PlacementHandle, PlacementInsert,
-    Placements, RenderableGraphic, blank_frame, compose,
+    GraphicsError, MAX_FRAMES_PER_BUFFER, MAX_FRAMES_PER_IMAGE, PixelBuffer, Placement,
+    PlacementHandle, PlacementInsert, Placements, RenderableGraphic, blank_frame, compose,
 };
 
 pub const MAX_IMAGES_PER_BUFFER: usize = 4096;
@@ -93,6 +93,7 @@ pub struct GraphicsState {
     image_ids: HashMap<NonZeroU32, ImageHandle>,
     placements: Placements,
     used_bytes: usize,
+    frame_count: usize,
     storage_limit: usize,
     next_image_id: u32,
     serial: u64,
@@ -106,6 +107,7 @@ impl GraphicsState {
             image_ids: Default::default(),
             placements: Default::default(),
             used_bytes: 0,
+            frame_count: 0,
             next_image_id: 1,
             serial: 0,
         }
@@ -489,28 +491,30 @@ impl GraphicsState {
     fn delete_frames(&mut self, command: &Command) -> Result<(), GraphicsError> {
         let handle = self.command_image_handle(command)?;
         let image = self.images.get_mut(&handle).ok_or(GraphicsError::NotFound)?;
-        let removed_bytes = if let Some(index) = command.rows.and_then(|frame| frame.checked_sub(2))
-        {
-            let index = index as usize;
-            if index >= image.frames.len() {
-                return Err(GraphicsError::NotFound);
-            }
-            let bytes = image.frames.remove(index).pixels.storage_bytes();
-            if image.current_frame == index + 1 {
+        let (removed_bytes, removed_frames) =
+            if let Some(index) = command.rows.and_then(|frame| frame.checked_sub(2)) {
+                let index = index as usize;
+                if index >= image.frames.len() {
+                    return Err(GraphicsError::NotFound);
+                }
+                let bytes = image.frames.remove(index).pixels.storage_bytes();
+                if image.current_frame == index + 1 {
+                    image.current_frame = 0;
+                } else if image.current_frame > index + 1 {
+                    image.current_frame -= 1;
+                }
+                (bytes, 1)
+            } else {
+                let bytes = image.frames.iter().map(|frame| frame.pixels.storage_bytes()).sum();
+                let frames = image.frames.len();
+                image.frames.clear();
                 image.current_frame = 0;
-            } else if image.current_frame > index + 1 {
-                image.current_frame -= 1;
-            }
-            bytes
-        } else {
-            let bytes = image.frames.iter().map(|frame| frame.pixels.storage_bytes()).sum();
-            image.frames.clear();
-            image.current_frame = 0;
-            bytes
-        };
+                (bytes, frames)
+            };
         image.animation_state = AnimationState::Stopped;
         image.next_frame_at = None;
         self.used_bytes = self.used_bytes.saturating_sub(removed_bytes);
+        self.frame_count = self.frame_count.saturating_sub(removed_frames);
         self.serial = self.serial.checked_add(1).ok_or(GraphicsError::TooLarge)?;
         image.content_generation = self.serial;
         Ok(())
@@ -554,7 +558,10 @@ impl GraphicsState {
         if edit_index == Some(0) {
             return Err(GraphicsError::Invalid);
         }
-        if edit_index.is_none() && image.frames.len() == MAX_FRAMES_PER_IMAGE {
+        if edit_index.is_none()
+            && (image.frames.len() == MAX_FRAMES_PER_IMAGE
+                || self.frame_count == MAX_FRAMES_PER_BUFFER)
+        {
             return Err(GraphicsError::NoSpace);
         }
         let required = destination.storage_bytes();
@@ -579,6 +586,7 @@ impl GraphicsState {
             }
         } else {
             image.frames.push(frame);
+            self.frame_count += 1;
         }
         self.used_bytes = target_usage;
         Ok(())
@@ -753,6 +761,7 @@ impl GraphicsState {
         self.image_ids.clear();
         self.placements.clear();
         self.used_bytes = 0;
+        self.frame_count = 0;
     }
 
     pub fn set_storage_limit(&mut self, storage_limit: usize) {
@@ -912,6 +921,7 @@ impl GraphicsState {
         if let Some(image) = self.images.remove(&handle) {
             let relative_images = self.placements.remove_image(handle);
             self.used_bytes -= image.storage_bytes();
+            self.frame_count = self.frame_count.saturating_sub(image.frames.len());
             if let Some(id) = image.external_id {
                 self.image_ids.remove(&id);
             }
@@ -992,6 +1002,26 @@ mod tests {
         assert_eq!(
             state.image_by_id(NonZeroU32::new(2).unwrap()).unwrap().pixels().bytes(),
             &[3; 12]
+        );
+    }
+
+    #[test]
+    fn bounds_animation_frame_metadata_per_buffer() {
+        let mut state = GraphicsState::new(8);
+        let image = Command { image_id: Some(1), ..Default::default() };
+        state.store(&image, pixels(1, 4)).unwrap();
+        state.frame_count = MAX_FRAMES_PER_BUFFER;
+
+        assert_eq!(
+            state.store_frame(
+                &Command {
+                    action: Some(Action::TransmitFrame),
+                    image_id: Some(1),
+                    ..Default::default()
+                },
+                pixels(2, 4),
+            ),
+            Err(GraphicsError::NoSpace)
         );
     }
 

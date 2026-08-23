@@ -4,6 +4,7 @@ use super::{GraphicsError, PixelBuffer};
 
 pub const DEFAULT_FRAME_GAP_MS: i32 = 40;
 pub const MAX_FRAMES_PER_IMAGE: usize = 4096;
+pub const MAX_FRAMES_PER_BUFFER: usize = 65_536;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct FrameComposition {

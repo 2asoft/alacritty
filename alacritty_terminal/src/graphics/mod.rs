@@ -9,8 +9,8 @@ mod transaction;
 mod transport;
 
 pub(crate) use animation::{
-    AnimationFrame, AnimationState, DEFAULT_FRAME_GAP_MS, FrameComposition, MAX_FRAMES_PER_IMAGE,
-    blank_frame, compose,
+    AnimationFrame, AnimationState, DEFAULT_FRAME_GAP_MS, FrameComposition, MAX_FRAMES_PER_BUFFER,
+    MAX_FRAMES_PER_IMAGE, blank_frame, compose,
 };
 pub use image::{PixelBuffer, ProcessedCommand, process_command};
 pub use parser::{
