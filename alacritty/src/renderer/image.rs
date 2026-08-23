@@ -62,6 +62,15 @@ fn intersect_scissors(left: [i32; 4], right: [i32; 4]) -> [i32; 4] {
     [x, y, right_edge.saturating_sub(x).max(0), top_edge.saturating_sub(y).max(0)]
 }
 
+fn premultiply_alpha(bytes: &mut [u8]) {
+    for pixel in bytes.chunks_exact_mut(4) {
+        let alpha = u16::from(pixel[3]);
+        for component in &mut pixel[..3] {
+            *component = ((u16::from(*component) * alpha + 127) / 255) as u8;
+        }
+    }
+}
+
 fn texture_bytes(regions: &[TileRegion]) -> Option<usize> {
     regions.iter().try_fold(0usize, |total, region| {
         usize::try_from(region.upload_width)
@@ -281,7 +290,7 @@ impl ImageRenderer {
             gl::BindVertexArray(self.vao);
             gl::BindBuffer(gl::ARRAY_BUFFER, self.vbo);
             gl::Enable(gl::BLEND);
-            gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
+            gl::BlendFunc(gl::ONE, gl::ONE_MINUS_SRC_ALPHA);
         }
 
         for image in images {
@@ -473,6 +482,7 @@ impl ImageRenderer {
             let start = row as usize * source_stride + region.upload_x as usize * 4;
             data.extend_from_slice(&pixels.bytes()[start..start + row_bytes]);
         }
+        premultiply_alpha(&mut data);
         let width = i32::try_from(region.upload_width)
             .map_err(|_| Error::Other("image tile too wide".into()))?;
         let height = i32::try_from(region.upload_height)
@@ -540,6 +550,13 @@ impl Drop for ImageRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn premultiplies_texture_pixels_for_linear_alpha_filtering() {
+        let mut pixels = [255, 128, 64, 128, 20, 40, 60, 0, 1, 2, 3, 255];
+        premultiply_alpha(&mut pixels);
+        assert_eq!(pixels, [128, 64, 32, 128, 0, 0, 0, 0, 1, 2, 3, 255]);
+    }
 
     #[test]
     fn texture_tiles_cover_image_with_bounded_overlapping_uploads() {

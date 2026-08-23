@@ -11,7 +11,7 @@ Kitty graphics support spans generic APC recognition, terminal protocol and imag
 3. Each primary and alternate screen owns separate graphics state.
 4. The PTY loop executes costly transport/decode work outside `Term`'s mutex and commits in input order.
 5. Display code snapshots immutable pixel handles and resolved placement geometry while locked.
-6. The renderer uploads disposable, hardware-sized texture tiles after releasing the lock, bounds cached tiles with deterministic LRU eviction, and composites three protocol image z strata around cell backgrounds, glyphs/decorations, and the cursor.
+6. The renderer uploads disposable, hardware-sized premultiplied-alpha texture tiles after releasing the lock, bounds cached tiles with deterministic LRU eviction, and composites three protocol image z strata around cell backgrounds, glyphs/decorations, and the cursor.
 
 ## Configuration
 
@@ -26,6 +26,8 @@ Kitty graphics support spans generic APC recognition, terminal protocol and imag
 - Relative placement graphs are acyclic, depth-bounded, and free of dangling parents.
 - Image replacement is atomic.
 - Dropping every GPU texture does not change terminal semantics.
+- CPU image storage remains straight RGBA; GPU uploads premultiply RGB by alpha before linear filtering and use premultiplied-alpha blending.
+- Valid rendered Unicode placeholder cells contribute image tiles and backgrounds, not visible placeholder glyphs or decorations.
 - Every image pass restores shared OpenGL bindings, active texture, blend state, and scissor state before a later text batch or frame so renderer-local state caches remain coherent.
 - Graphics state never crosses primary and alternate screen ownership.
 - APC and command parser memory remains bounded for malformed or incomplete input.

@@ -2,7 +2,7 @@
 //! GPU drawing.
 
 use std::cmp;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Formatter};
 use std::mem::{self, ManuallyDrop};
 use std::num::NonZeroU32;
@@ -936,6 +936,7 @@ impl Display {
 
         let cell_width = size_info.cell_width();
         let cell_height = size_info.cell_height();
+        let mut rendered_placeholders = HashSet::<(usize, usize)>::new();
         for viewport_line in 0..size_info.screen_lines() {
             if !has_virtual_graphics {
                 break;
@@ -982,6 +983,7 @@ impl Display {
                 if tile_left == tile_right || tile_top == tile_bottom {
                     continue;
                 }
+                rendered_placeholders.insert((viewport_line, column));
                 graphics.push(RenderableImage {
                     image: prototype.image,
                     content_generation: prototype.content_generation,
@@ -1089,6 +1091,11 @@ impl Display {
             let cells = grid_cells.into_iter().map(|mut cell| {
                 if !graphics.is_empty() {
                     cell.bg_alpha = 0.;
+                }
+                if rendered_placeholders.contains(&(cell.point.line, cell.point.column.0)) {
+                    cell.character = ' ';
+                    cell.extra = None;
+                    cell.flags.remove(Flags::ALL_UNDERLINES | Flags::STRIKEOUT);
                 }
                 // Underline hints hovered by mouse or vi mode cursor.
                 if has_highlighted_hint {

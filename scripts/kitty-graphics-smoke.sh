@@ -26,10 +26,14 @@ import sys
 from pathlib import Path
 
 pixel = base64.b64encode(bytes([255, 0, 0, 255])).decode("ascii")
+transparent = base64.b64encode(bytes([0, 255, 255, 0])).decode("ascii")
+placeholder = "\U0010eeee\u0305"
 script = (
     "printf 'Thin text must remain stable across redraws\\nSecond line 0123456789'; "
     f"printf '\\033_Ga=t,q=2,f=32,s=1,v=1,i=1;{pixel}\\033\\\\'; "
-    "printf '\\033[5;1H\\033_Ga=p,q=2,i=1,c=4,r=4,z=-1,C=1\\033\\\\\\033[20;20H'; "
+    "printf '\\033[5;1H\\033_Ga=p,q=2,i=1,c=4,r=4,z=-1,C=1\\033\\\\'; "
+    f"printf '\\033_Ga=T,q=2,f=32,s=1,v=1,i=16711935,U=1,c=1,r=1;{transparent}\\033\\\\'; "
+    f"printf '\\033[10;1H\\033[38;2;255;0;255m{placeholder}\\033[0m\\033[20;20H'; "
     "sleep 30"
 )
 quoted = '"' + script.replace('\\', '\\\\').replace('"', '\\"') + '"'
@@ -95,6 +99,13 @@ text_pixels=$(magick "$output/text-1.png" -format %c histogram:info:- \
     | awk '/#D8D8D8 / { gsub(":", "", $1); print $1 }')
 [ "${text_pixels:-0}" -ge 40 ] || {
     echo "expected text above negative-z image was missing from framebuffer" >&2
+    exit 1
+}
+
+placeholder_pixels=$(magick "$output/frame-1.png" -format %c histogram:info:- \
+    | awk '/#FF00FF / { gsub(":", "", $1); print $1 }')
+[ "${placeholder_pixels:-0}" -eq 0 ] || {
+    echo "unicode placeholder glyph leaked through its transparent image tile" >&2
     exit 1
 }
 
