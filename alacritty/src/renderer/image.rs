@@ -10,6 +10,63 @@ use crate::renderer::shader::{ShaderProgram, ShaderVersion};
 
 const IMAGE_SHADER_F: &str = include_str!("../../res/image.f.glsl");
 const IMAGE_SHADER_V: &str = include_str!("../../res/image.v.glsl");
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TileRegion {
+    core_x: u32,
+    core_y: u32,
+    core_width: u32,
+    core_height: u32,
+    upload_x: u32,
+    upload_y: u32,
+    upload_width: u32,
+    upload_height: u32,
+}
+
+fn tile_regions(width: u32, height: u32, maximum: u32) -> Vec<TileRegion> {
+    let border = u32::from(maximum > 2);
+    let core_size = maximum.saturating_sub(border * 2).max(1);
+    let mut regions = Vec::new();
+    let mut core_y = 0;
+    while core_y < height {
+        let core_height = core_size.min(height - core_y);
+        let mut core_x = 0;
+        while core_x < width {
+            let core_width = core_size.min(width - core_x);
+            let upload_x = core_x.saturating_sub(border);
+            let upload_y = core_y.saturating_sub(border);
+            let upload_right = core_x.saturating_add(core_width).saturating_add(border).min(width);
+            let upload_bottom =
+                core_y.saturating_add(core_height).saturating_add(border).min(height);
+            regions.push(TileRegion {
+                core_x,
+                core_y,
+                core_width,
+                core_height,
+                upload_x,
+                upload_y,
+                upload_width: upload_right - upload_x,
+                upload_height: upload_bottom - upload_y,
+            });
+            core_x += core_width;
+        }
+        core_y += core_height;
+    }
+    regions
+}
+
+fn texture_bytes(regions: &[TileRegion]) -> Option<usize> {
+    regions.iter().try_fold(0usize, |total, region| {
+        usize::try_from(region.upload_width)
+            .ok()
+            .and_then(|width| {
+                usize::try_from(region.upload_height)
+                    .ok()
+                    .and_then(|height| width.checked_mul(height))
+            })
+            .and_then(|pixels| pixels.checked_mul(4))
+            .and_then(|bytes| total.checked_add(bytes))
+    })
+}
 
 #[derive(Clone, Debug)]
 pub struct RenderableImage {
@@ -45,13 +102,23 @@ struct TextureKey {
 }
 
 #[derive(Debug)]
-struct Texture(GLuint);
+struct TextureTile {
+    texture: GLuint,
+    region: TileRegion,
+}
 
-impl Drop for Texture {
+impl Drop for TextureTile {
     fn drop(&mut self) {
         // SAFETY: The texture name was created by this renderer in the current shared GL context.
-        unsafe { gl::DeleteTextures(1, &self.0) }
+        unsafe { gl::DeleteTextures(1, &self.texture) }
     }
+}
+
+#[derive(Debug)]
+struct CachedImage {
+    tiles: Vec<TextureTile>,
+    bytes: usize,
+    last_used: u64,
 }
 
 #[derive(Debug)]
@@ -60,7 +127,10 @@ pub(super) struct ImageRenderer {
     texture_uniform: GLint,
     vao: GLuint,
     vbo: GLuint,
-    textures: HashMap<TextureKey, Texture>,
+    textures: HashMap<TextureKey, CachedImage>,
+    texture_bytes: usize,
+    usage_clock: u64,
+    maximum_texture_size: u32,
 }
 
 impl ImageRenderer {
@@ -99,7 +169,21 @@ impl ImageRenderer {
             gl::BindVertexArray(0);
         }
 
-        Ok(Self { program, texture_uniform, vao, vbo, textures: HashMap::new() })
+        let mut maximum_texture_size = 0;
+        // SAFETY: A current GL context exists and the output points to valid writable storage.
+        unsafe { gl::GetIntegerv(gl::MAX_TEXTURE_SIZE, &mut maximum_texture_size) };
+        let maximum_texture_size = u32::try_from(maximum_texture_size).unwrap_or(1).clamp(1, 8192);
+
+        Ok(Self {
+            program,
+            texture_uniform,
+            vao,
+            vbo,
+            textures: HashMap::new(),
+            texture_bytes: 0,
+            usage_clock: 0,
+            maximum_texture_size,
+        })
     }
 
     pub(super) fn draw(
@@ -107,7 +191,9 @@ impl ImageRenderer {
         viewport_width: f32,
         viewport_height: f32,
         images: &[RenderableImage],
+        cache_limit: usize,
     ) {
+        self.evict_for(0, cache_limit);
         if images.is_empty() {
             return;
         }
@@ -126,42 +212,40 @@ impl ImageRenderer {
 
         for image in images {
             let key = TextureKey { image: image.image, generation: image.content_generation };
-            if !self.textures.contains_key(&key) && self.upload(key, &image.pixels).is_err() {
-                continue;
+            if !self.textures.contains_key(&key) {
+                let regions = tile_regions(
+                    image.pixels.width(),
+                    image.pixels.height(),
+                    self.maximum_texture_size,
+                );
+                if texture_bytes(&regions).is_some_and(|bytes| bytes > cache_limit) {
+                    for region in regions {
+                        let Ok(tile) = Self::upload_tile(&image.pixels, region) else {
+                            break;
+                        };
+                        self.draw_tile(
+                            viewport_width,
+                            viewport_height,
+                            image,
+                            tile.texture,
+                            tile.region,
+                        );
+                    }
+                    continue;
+                }
+                if self.upload(key, &image.pixels, cache_limit).is_err() {
+                    continue;
+                }
             }
-            let Some(texture) = self.textures.get(&key) else {
+            self.usage_clock = self.usage_clock.saturating_add(1);
+            let Some(cached) = self.textures.get_mut(&key) else {
                 continue;
             };
-
-            let texture_width = image.pixels.width() as f32;
-            let texture_height = image.pixels.height() as f32;
-            let left = image.source_x as f32 / texture_width;
-            let top = image.source_y as f32 / texture_height;
-            let right = (image.source_x + image.source_width) as f32 / texture_width;
-            let bottom = (image.source_y + image.source_height) as f32 / texture_height;
-            let x = image.x / (viewport_width / 2.) - 1.;
-            let y = 1. - image.y / (viewport_height / 2.);
-            let width = image.width / (viewport_width / 2.);
-            let height = image.height / (viewport_height / 2.);
-            let vertices = [
-                Vertex { x, y, texture_x: left, texture_y: top },
-                Vertex { x, y: y - height, texture_x: left, texture_y: bottom },
-                Vertex { x: x + width, y, texture_x: right, texture_y: top },
-                Vertex { x: x + width, y, texture_x: right, texture_y: top },
-                Vertex { x: x + width, y: y - height, texture_x: right, texture_y: bottom },
-                Vertex { x, y: y - height, texture_x: left, texture_y: bottom },
-            ];
-
-            // SAFETY: `texture` is live in the cache and `vertices` covers the uploaded byte range.
-            unsafe {
-                gl::BindTexture(gl::TEXTURE_2D, texture.0);
-                gl::BufferData(
-                    gl::ARRAY_BUFFER,
-                    mem::size_of_val(&vertices) as isize,
-                    vertices.as_ptr().cast(),
-                    gl::STREAM_DRAW,
-                );
-                gl::DrawArrays(gl::TRIANGLES, 0, vertices.len() as i32);
+            cached.last_used = self.usage_clock;
+            let tiles: Vec<_> =
+                cached.tiles.iter().map(|tile| (tile.texture, tile.region)).collect();
+            for (texture, region) in tiles {
+                self.draw_tile(viewport_width, viewport_height, image, texture, region);
             }
         }
 
@@ -177,15 +261,112 @@ impl ImageRenderer {
         }
     }
 
-    fn upload(&mut self, key: TextureKey, pixels: &PixelBuffer) -> Result<(), Error> {
-        let width =
-            i32::try_from(pixels.width()).map_err(|_| Error::Other("image too wide".into()))?;
-        let height =
-            i32::try_from(pixels.height()).map_err(|_| Error::Other("image too tall".into()))?;
-        self.textures.retain(|cached, _| cached.image != key.image);
+    fn draw_tile(
+        &mut self,
+        viewport_width: f32,
+        viewport_height: f32,
+        image: &RenderableImage,
+        texture: GLuint,
+        region: TileRegion,
+    ) {
+        let source_right = image.source_x + image.source_width;
+        let source_bottom = image.source_y + image.source_height;
+        let tile_right = region.core_x + region.core_width;
+        let tile_bottom = region.core_y + region.core_height;
+        let left = image.source_x.max(region.core_x);
+        let right = source_right.min(tile_right);
+        let top = image.source_y.max(region.core_y);
+        let bottom = source_bottom.min(tile_bottom);
+        if left >= right || top >= bottom {
+            return;
+        }
+
+        let destination_left =
+            image.x + (left - image.source_x) as f32 / image.source_width as f32 * image.width;
+        let destination_right =
+            image.x + (right - image.source_x) as f32 / image.source_width as f32 * image.width;
+        let destination_top =
+            image.y + (top - image.source_y) as f32 / image.source_height as f32 * image.height;
+        let destination_bottom =
+            image.y + (bottom - image.source_y) as f32 / image.source_height as f32 * image.height;
+        let texture_left = (left - region.upload_x) as f32 / region.upload_width as f32;
+        let texture_right = (right - region.upload_x) as f32 / region.upload_width as f32;
+        let texture_top = (top - region.upload_y) as f32 / region.upload_height as f32;
+        let texture_bottom = (bottom - region.upload_y) as f32 / region.upload_height as f32;
+        let left = destination_left / (viewport_width / 2.) - 1.;
+        let right = destination_right / (viewport_width / 2.) - 1.;
+        let top = 1. - destination_top / (viewport_height / 2.);
+        let bottom = 1. - destination_bottom / (viewport_height / 2.);
+        let vertices = [
+            Vertex { x: left, y: top, texture_x: texture_left, texture_y: texture_top },
+            Vertex { x: left, y: bottom, texture_x: texture_left, texture_y: texture_bottom },
+            Vertex { x: right, y: top, texture_x: texture_right, texture_y: texture_top },
+            Vertex { x: right, y: top, texture_x: texture_right, texture_y: texture_top },
+            Vertex { x: right, y: bottom, texture_x: texture_right, texture_y: texture_bottom },
+            Vertex { x: left, y: bottom, texture_x: texture_left, texture_y: texture_bottom },
+        ];
+
+        // SAFETY: `texture` is cached and `vertices` covers the uploaded buffer range.
+        unsafe {
+            gl::BindTexture(gl::TEXTURE_2D, texture);
+            gl::BufferData(
+                gl::ARRAY_BUFFER,
+                mem::size_of_val(&vertices) as isize,
+                vertices.as_ptr().cast(),
+                gl::STREAM_DRAW,
+            );
+            gl::DrawArrays(gl::TRIANGLES, 0, vertices.len() as i32);
+        }
+    }
+
+    fn remove_image_textures(&mut self, image: ImageHandle) {
+        let keys: Vec<_> = self.textures.keys().filter(|key| key.image == image).copied().collect();
+        for key in keys {
+            if let Some(cached) = self.textures.remove(&key) {
+                self.texture_bytes = self.texture_bytes.saturating_sub(cached.bytes);
+            }
+        }
+    }
+
+    fn evict_for(&mut self, incoming: usize, cache_limit: usize) {
+        while self.texture_bytes.saturating_add(incoming) > cache_limit {
+            let candidate = self
+                .textures
+                .iter()
+                .min_by_key(|(key, cached)| (cached.last_used, key.generation))
+                .map(|(key, _)| *key);
+            let Some(candidate) = candidate else {
+                break;
+            };
+            if let Some(cached) = self.textures.remove(&candidate) {
+                self.texture_bytes = self.texture_bytes.saturating_sub(cached.bytes);
+            }
+        }
+    }
+
+    fn upload_tile(pixels: &PixelBuffer, region: TileRegion) -> Result<TextureTile, Error> {
+        let source_stride = usize::try_from(pixels.width())
+            .ok()
+            .and_then(|width| width.checked_mul(4))
+            .ok_or_else(|| Error::Other("image row too wide".into()))?;
+        let row_bytes = usize::try_from(region.upload_width)
+            .ok()
+            .and_then(|width| width.checked_mul(4))
+            .ok_or_else(|| Error::Other("image tile too wide".into()))?;
+        let tile_bytes = row_bytes
+            .checked_mul(region.upload_height as usize)
+            .ok_or_else(|| Error::Other("image tile too large".into()))?;
+        let mut data = Vec::with_capacity(tile_bytes);
+        for row in region.upload_y..region.upload_y + region.upload_height {
+            let start = row as usize * source_stride + region.upload_x as usize * 4;
+            data.extend_from_slice(&pixels.bytes()[start..start + row_bytes]);
+        }
+        let width = i32::try_from(region.upload_width)
+            .map_err(|_| Error::Other("image tile too wide".into()))?;
+        let height = i32::try_from(region.upload_height)
+            .map_err(|_| Error::Other("image tile too tall".into()))?;
         let mut texture = 0;
-        // SAFETY: The immutable RGBA slice has exactly four bytes per declared image pixel. GL
-        // copies it before this call returns.
+        // SAFETY: The tile buffer matches the declared RGBA dimensions and GL copies it.
         unsafe {
             gl::GenTextures(1, &mut texture);
             gl::BindTexture(gl::TEXTURE_2D, texture);
@@ -203,11 +384,31 @@ impl ImageRenderer {
                 0,
                 gl::RGBA,
                 gl::UNSIGNED_BYTE,
-                pixels.bytes().as_ptr().cast(),
+                data.as_ptr().cast(),
             );
-            gl::BindTexture(gl::TEXTURE_2D, 0);
         }
-        self.textures.insert(key, Texture(texture));
+        Ok(TextureTile { texture, region })
+    }
+
+    fn upload(
+        &mut self,
+        key: TextureKey,
+        pixels: &PixelBuffer,
+        cache_limit: usize,
+    ) -> Result<(), Error> {
+        let regions = tile_regions(pixels.width(), pixels.height(), self.maximum_texture_size);
+        let bytes = texture_bytes(&regions)
+            .ok_or_else(|| Error::Other("image texture cache size overflow".into()))?;
+        self.remove_image_textures(key.image);
+        self.evict_for(bytes, cache_limit);
+
+        let mut tiles = Vec::with_capacity(regions.len());
+        for region in regions {
+            tiles.push(Self::upload_tile(pixels, region)?);
+        }
+        unsafe { gl::BindTexture(gl::TEXTURE_2D, 0) };
+        self.texture_bytes = self.texture_bytes.saturating_add(bytes);
+        self.textures.insert(key, CachedImage { tiles, bytes, last_used: self.usage_clock });
         Ok(())
     }
 }
@@ -221,5 +422,30 @@ impl Drop for ImageRenderer {
             gl::DeleteBuffers(1, &self.vbo);
             gl::DeleteVertexArrays(1, &self.vao);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn texture_tiles_cover_image_with_bounded_overlapping_uploads() {
+        let regions = tile_regions(8, 5, 4);
+        assert!(regions.iter().all(|region| region.upload_width <= 4 && region.upload_height <= 4));
+        let core_pixels: u32 =
+            regions.iter().map(|region| region.core_width * region.core_height).sum();
+        assert_eq!(core_pixels, 40);
+        assert!(regions.iter().any(|region| region.upload_x < region.core_x));
+        assert!(regions.iter().any(|region| region.upload_y < region.core_y));
+
+        let single_pixel_tiles = tile_regions(3, 2, 1);
+        assert_eq!(single_pixel_tiles.len(), 6);
+        assert!(
+            single_pixel_tiles
+                .iter()
+                .all(|region| region.upload_width == 1 && region.upload_height == 1)
+        );
+        assert_eq!(texture_bytes(&single_pixel_tiles), Some(24));
     }
 }

@@ -180,8 +180,13 @@ impl Renderer {
         Ok(Self { text_renderer, rect_renderer, image_renderer, robustness })
     }
 
-    pub fn draw_images(&mut self, size_info: &SizeInfo, images: &[RenderableImage]) {
-        self.image_renderer.draw(size_info.width(), size_info.height(), images);
+    pub fn draw_images(
+        &mut self,
+        size_info: &SizeInfo,
+        images: &[RenderableImage],
+        cache_limit: usize,
+    ) {
+        self.image_renderer.draw(size_info.width(), size_info.height(), images, cache_limit);
     }
 
     pub fn draw_cells<I: Iterator<Item = RenderableCell>>(

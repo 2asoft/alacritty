@@ -1023,9 +1023,10 @@ impl Display {
         self.make_current();
 
         self.renderer.clear(background_color, config.window_opacity());
+        let image_cache_limit = config.terminal.graphics.storage_limit;
         let very_negative_end = graphics.partition_point(|image| image.z_index < i32::MIN / 2);
         let negative_end = graphics.partition_point(|image| image.z_index < 0);
-        self.renderer.draw_images(&size_info, &graphics[..very_negative_end]);
+        self.renderer.draw_images(&size_info, &graphics[..very_negative_end], image_cache_limit);
         let mut lines = RenderLines::new();
 
         // Optimize loop hint comparator.
@@ -1053,7 +1054,11 @@ impl Display {
                     cell
                 });
                 self.renderer.draw_cells(&size_info, glyph_cache, backgrounds);
-                self.renderer.draw_images(&size_info, &graphics[very_negative_end..negative_end]);
+                self.renderer.draw_images(
+                    &size_info,
+                    &graphics[very_negative_end..negative_end],
+                    image_cache_limit,
+                );
             }
 
             let cells = grid_cells.into_iter().map(|mut cell| {
@@ -1083,7 +1088,7 @@ impl Display {
         }
 
         self.renderer.draw_rects(&size_info, &metrics, lines.rects(&metrics, &size_info));
-        self.renderer.draw_images(&size_info, &graphics[negative_end..]);
+        self.renderer.draw_images(&size_info, &graphics[negative_end..], image_cache_limit);
 
         let mut rects = Vec::new();
 

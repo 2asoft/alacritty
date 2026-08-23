@@ -11,7 +11,7 @@ Kitty graphics support spans generic APC recognition, terminal protocol and imag
 3. Each primary and alternate screen owns separate graphics state.
 4. The PTY loop executes costly transport/decode work outside `Term`'s mutex and commits in input order.
 5. Display code snapshots immutable pixel handles and resolved placement geometry while locked.
-6. The renderer uploads disposable textures after releasing the lock and composites three protocol image z strata around cell backgrounds, glyphs/decorations, and the cursor.
+6. The renderer uploads disposable, hardware-sized texture tiles after releasing the lock, bounds cached tiles with deterministic LRU eviction, and composites three protocol image z strata around cell backgrounds, glyphs/decorations, and the cursor.
 
 ## Configuration
 
