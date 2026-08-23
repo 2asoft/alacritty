@@ -42,7 +42,7 @@ Malformed, unsupported, oversized, exhausted, or inaccessible operations produce
 - `alacritty_terminal/src/event_loop.rs` - retained input suffix, unlocked decode, and ordered commit boundary.
 - `alacritty_terminal/src/graphics/` - typed commands, bounded canonical decoding, per-screen image storage, relative placement graphs, and Unicode placeholder decoding.
 - `scripts/generate-kitty-diacritics.py` - authoritative placeholder row/column table regeneration.
-- `scripts/kitty-graphics-smoke.sh` - isolated headless-Sway semantic framebuffer and repeated-redraw validation, including text composited above a negative-z image.
+- `scripts/kitty-graphics-smoke.sh` - isolated headless-Sway framebuffer validation for z strata, crop/scale, alpha overlap, placeholder backgrounds, automatic animation, bounded cache eviction, texture reconstruction, and repeated text redraws.
 - `scripts/kitty-graphics-benchmark.sh` - release-mode ordinary-text parser benchmark.
 - `fuzz/fuzz_targets/kitty_stream.rs` - bounded stateful PTY/parser/decoder/grid fuzz target.
 - `alacritty_terminal/src/term/mod.rs` - screen state, reset, resize, and render snapshot boundary.

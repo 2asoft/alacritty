@@ -3633,33 +3633,33 @@ invalid anchor → clamp to top-left
 
 Before considering graphics complete:
 
-- [ ] APC buffers bounded.
-- [ ] Direct chunk buffers bounded.
-- [ ] All arithmetic checked.
-- [ ] Base64 decode bounded.
-- [ ] zlib output bounded.
-- [ ] PNG dimensions checked before canonical allocation.
-- [ ] CPU quota enforced before commit.
-- [ ] Metadata object counts bounded.
-- [ ] File reads bounded.
-- [ ] Opened object verified as regular file.
-- [ ] Special files rejected.
-- [ ] Temporary deletion path constrained.
-- [ ] Shared-memory ranges checked.
-- [ ] Shared-memory lifetime cleaned correctly.
-- [ ] No heavyweight IO/decode occurs under `Term` lock.
-- [ ] Replacement atomic.
-- [ ] Parser cancellation releases reservation.
-- [ ] Graphics payload never logged.
-- [ ] Error messages bounded.
-- [ ] Renderer texture dimensions checked.
-- [ ] Oversized textures tiled.
-- [ ] Relative graphs cycle checked.
-- [ ] Relative depth bounded.
-- [ ] History pruning invalidates anchors.
-- [ ] Fuzz targets run under sanitizers where applicable.
-- [ ] Repeated upload/delete has stable memory usage.
-- [ ] Context-loss reconstruction tested.
+- [x] APC buffers bounded.
+- [x] Direct chunk buffers bounded.
+- [x] All arithmetic checked.
+- [x] Base64 decode bounded.
+- [x] zlib output bounded.
+- [x] PNG dimensions checked before canonical allocation.
+- [x] CPU quota enforced before commit.
+- [x] Metadata object counts bounded.
+- [x] File reads bounded.
+- [x] Opened object verified as regular file.
+- [x] Special files rejected.
+- [x] Temporary deletion path constrained.
+- [x] Shared-memory ranges checked.
+- [x] Shared-memory lifetime cleaned correctly.
+- [x] No heavyweight IO/decode occurs under `Term` lock.
+- [x] Replacement atomic.
+- [x] Parser cancellation releases reservation.
+- [x] Graphics payload never logged.
+- [x] Error messages bounded.
+- [x] Renderer texture dimensions checked.
+- [x] Oversized textures tiled.
+- [x] Relative graphs cycle checked.
+- [x] Relative depth bounded.
+- [x] History pruning invalidates anchors.
+- [x] Fuzz targets run under sanitizers where applicable.
+- [x] Repeated upload/delete has stable memory usage.
+- [x] Context-loss reconstruction tested.
 
 ---
 

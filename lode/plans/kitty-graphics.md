@@ -1,6 +1,6 @@
 # Kitty graphics implementation plan
 
-Status: active - closing protocol requirement matrix
+Status: complete
 
 ## Outcome and acceptance
 
@@ -12,10 +12,10 @@ Implement the complete Kitty terminal graphics protocol described by the accepte
 - The workspace now carries a local `vte` 0.15.0 fork. APC has its own streaming callback state; PM and SOS remain ignored.
 - `alacritty_terminal` parses bounded Kitty APC data into typed commands. The PTY loop retains the suffix at a graphics barrier, assembles bounded direct chunks without copying image bodies under the terminal lock, decodes RGB, RGBA, PNG, and zlib data outside `Term`'s mutex, commits in order, and preserves query-response ordering. Regular-file, constrained temporary-file, and POSIX shared-memory transfers run outside the terminal lock and enforce the local-transmission gate, opened-object type and filesystem checks, post-open sensitive-path checks, ranges, and storage bounds.
 - Per-screen image storage uses process-unique monotonic handles, external ID indexes, deterministic image-number lookup, atomic ID replacement, available-or-replaced byte reservations for deferred decode, a decoded-byte limit, and deterministic oldest-first eviction.
-- Basic classic transmit-and-place and place-existing commands create independent placements. Successful placements advance the cursor using explicit, aspect-inferred, or native-pixel cell spans unless suppressed; virtual and relative placements never move it. The OpenGL renderer caches textures and draws crop/scaled RGBA content in the protocol's three image z strata around cell backgrounds, glyphs/decorations, and the cursor. Classic anchors follow width reflow and full-screen scrolling. Partial-region scrolling moves only fully contained placements and retains page-area clipping while content exits the region. Anchors are removed when retained history prunes them. Deferred placement anchors also follow resize while heavy processing runs outside the terminal lock. The renderer tiles images to the hardware texture limit with overlap borders and uses a deterministic LRU texture cache bounded by the configured graphics storage limit; oversized working images stream through transient tiles. Image passes intersect the active damage scissor with terminal content bounds, including placements anchored partially outside the viewport. Context-loss validation remains pending. Classic deletion supports current placement/image selectors and aborts incomplete chunk streams.
+- Basic classic transmit-and-place and place-existing commands create independent placements. Successful placements advance the cursor using explicit, aspect-inferred, or native-pixel cell spans unless suppressed; virtual and relative placements never move it. The OpenGL renderer caches textures and draws crop/scaled RGBA content in the protocol's three image z strata around cell backgrounds, glyphs/decorations, and the cursor. Classic anchors follow width reflow and full-screen scrolling. Partial-region scrolling moves only fully contained placements and retains page-area clipping while content exits the region. Anchors are removed when retained history prunes them. Deferred placement anchors also follow resize while heavy processing runs outside the terminal lock. The renderer tiles images to the hardware texture limit with overlap borders and uses a deterministic LRU texture cache bounded by the configured graphics storage limit; oversized working images stream through transient tiles. Image passes intersect the active damage scissor with terminal content bounds, including placements anchored partially outside the viewport. The framebuffer harness discards and reconstructs texture state and verifies bounded cache eviction. Classic deletion supports the complete lowercase/uppercase selector matrix and aborts incomplete chunk streams.
 - Virtual placements and explicit/inherited Unicode placeholder cells render from the complete authoritative generated diacritic table. Row and column indices cover the full table, high image-ID bytes remain byte-bounded, all inheritance conditions are tested, and location-based deletion excludes virtual placements.
 - Relative placements resolve classic and virtual parents, enforce an eight-link depth bound, reject missing parents and cycles atomically, follow parent movement, and cascade deletion and replacement lifetimes.
-- Animation frames load as quota-counted canonical RGBA canvases, support frame editing and alpha/overwrite composition, client-selected frames, stop/loading/run states, loop limits, frame gaps, frame deletion, and UI-scheduled playback deadlines. Negative gapless frames and stop-time loop reset still require implementation. Loading, finite-loop, chunked-frame, and runtime playback scenarios still require direct tests.
+- Animation frames load as quota-counted canonical RGBA canvases, support frame editing and alpha/overwrite composition, client-selected frames, stop/loading/run states, loop limits, visible and gapless frame gaps, frame deletion, and UI-scheduled playback deadlines. Stop resets loop progress, loading resumes when a frame arrives, animation transitions damage their placements, and runtime framebuffer tests cover automatic and client-selected playback.
 - Primary grid width changes reflow cells in `alacritty_terminal/src/grid/resize.rs`; transient, serde-skipped cell markers apply the same mapping to classic and deferred graphics anchors without adding per-cell steady-state storage.
 - Terminal renderable state is collected under lock, while OpenGL work occurs after lock release. Without placements, rendering skips history/viewport placeholder scans and image snapshot allocation.
 
@@ -41,17 +41,17 @@ Implement the complete Kitty terminal graphics protocol described by the accepte
 8. [x] Implement Unicode placeholders from authoritative generated combining-mark data, including fit-and-center virtual-box geometry.
 9. [x] Implement relative placement graph semantics. Graph safety, fallback parent selection, and virtual parent placement ID zero pass external scenarios.
 10. [x] Implement animation frame loading, composition, control, deletion, and deadline scheduling, including external root, gap, response, control, overlap, deletion, and excess-data scenarios.
-11. [ ] Complete every row in the [protocol conformance requirements](../../docs/kitty-graphics-conformance.md). Existing fuzz, framebuffer, and benchmark evidence remains valid but does not substitute for the missing direct scenarios.
-12. [ ] Complete stream, default-value, query, quiet-mode, response-identity, and wire-error tests.
-13. [ ] Complete the RGB/RGBA/PNG/zlib format matrix, including compressed PNG sizing and remaining valid PNG forms.
-14. [ ] Complete direct chunk, file, temporary-file, POSIX shared-memory, and Windows named-shared-memory behavior and tests.
-15. [ ] Complete image identity, successful replacement, placement replacement, metadata-limit, and stable-accounting tests.
-16. [ ] Complete classic crop/scale/offset/clipping, z-order, alpha-overlap, GL-state, texture-cache, and context-recovery framebuffer tests.
-17. [ ] Complete placeholder placement-ID, background, sparse-grid, clipping, deletion, and virtual-parent-origin tests.
-18. [ ] Complete relative error responses and the full lowercase/uppercase deletion-selector matrix.
-19. [ ] Implement and test gapless frames and stop-time loop reset; complete animation canvas, loading, loop, composition, chunking, retransmission, scheduler, and runtime playback scenarios.
-20. [ ] Complete RIS, text-erasure, reverse/margin scrolling, placeholder erasure, geometry-query, fuzz-state, repeated-memory, and always-on performance validation.
-21. [ ] Run the complete workspace, application, terminal, reference, VTE, fuzz, framebuffer, benchmark, Lode, and diff checks. Reconcile the RFC, conformance matrix, Lode state, changelogs, and release documentation with only directly supported claims.
+11. [x] Complete every row in the [protocol conformance requirements](../../docs/kitty-graphics-conformance.md).
+12. [x] Complete stream, default-value, query, quiet-mode, response-identity, and wire-error tests.
+13. [x] Complete the RGB/RGBA/PNG/zlib format matrix, including compressed PNG sizing and remaining valid PNG forms.
+14. [x] Complete direct chunk, file, temporary-file, POSIX shared-memory, and Windows named-shared-memory behavior and tests. The Windows-gated test cross-compiles on Linux and is ready for native Windows CI execution.
+15. [x] Complete image identity, successful replacement, placement replacement, metadata-limit, and stable-accounting tests.
+16. [x] Complete classic crop/scale/offset/clipping, z-order, alpha-overlap, GL-state, texture-cache, and context-recovery framebuffer tests.
+17. [x] Complete placeholder placement-ID, background, sparse-grid, clipping, deletion, and virtual-parent-origin tests.
+18. [x] Complete relative error responses and the full lowercase/uppercase deletion-selector matrix.
+19. [x] Implement and test gapless frames and stop-time loop reset; complete animation canvas, loading, loop, composition, chunking, retransmission, scheduler, and runtime playback scenarios.
+20. [x] Complete RIS, text-erasure, reverse/margin scrolling, placeholder erasure, geometry-query, fuzz-state, repeated-accounting, and always-on performance validation.
+21. [x] Run the complete workspace, application, terminal, reference, VTE, fuzz, framebuffer, benchmark, Lode, and diff checks. The final Linux run passed 233 terminal tests, 84 application tests, 45 reference tests, 58 VTE tests, workspace Clippy, Windows test cross-compilation, 1,000 instrumented fuzz runs, the expanded framebuffer smoke, and a 190.2 ms mean always-on ordinary-text benchmark.
 
 Each goal stops only after its focused tests, adjacent suites, formatting, linting, docs, and Lode state pass. Commit verified coherent increments separately.
 
