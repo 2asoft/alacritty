@@ -622,7 +622,6 @@ impl GraphicsState {
         let gap_ms = command
             .z_index
             .filter(|gap| *gap != 0)
-            .map(|gap| gap.max(0))
             .or(existing_gap)
             .unwrap_or(DEFAULT_FRAME_GAP_MS);
         let frame = AnimationFrame { pixels: destination, gap_ms };
@@ -710,9 +709,9 @@ impl GraphicsState {
             command.z_index.filter(|gap| *gap != 0),
         ) {
             if frame == 0 {
-                image.root_gap_ms = gap.max(0);
+                image.root_gap_ms = gap;
             } else if let Some(frame) = image.frames.get_mut(frame as usize - 1) {
-                frame.gap_ms = gap.max(0);
+                frame.gap_ms = gap;
             }
         }
         if let Some(frame) = command.columns.and_then(|frame| frame.checked_sub(1)) {
@@ -722,12 +721,22 @@ impl GraphicsState {
                 image.content_generation = self.serial;
             }
         }
-        image.animation_state = match command.width.unwrap_or(0) {
-            1 => AnimationState::Stopped,
-            2 => AnimationState::Loading,
-            3 => AnimationState::Running,
-            _ => image.animation_state,
-        };
+        match command.width.unwrap_or(0) {
+            1 => {
+                image.animation_state = AnimationState::Stopped;
+                image.completed_loops = 0;
+                image.next_frame_at = None;
+            },
+            2 => {
+                image.animation_state = AnimationState::Loading;
+                image.next_frame_at = None;
+            },
+            3 => {
+                image.animation_state = AnimationState::Running;
+                image.next_frame_at = None;
+            },
+            _ => (),
+        }
         if command.height.unwrap_or(0) != 0 {
             image.loops = command.height.unwrap_or(1);
         }
@@ -754,45 +763,36 @@ impl GraphicsState {
                 continue;
             }
             if image.next_frame_at.is_none() {
-                let gap = if image.current_frame == 0 {
-                    image.root_gap_ms
-                } else {
-                    image.frames[image.current_frame - 1].gap_ms
-                };
-                image.next_frame_at = Some(now + Duration::from_millis(gap.max(1) as u64));
-            }
-            let mut transitions = 0;
-            while image.next_frame_at.is_some_and(|deadline| deadline <= now) {
-                transitions += 1;
-                if transitions > image.frames.len() + 1 {
-                    image.next_frame_at = Some(now + Duration::from_millis(1));
-                    break;
-                }
-                if image.animation_state == AnimationState::Loading
-                    && image.current_frame == image.frames.len()
-                {
-                    image.next_frame_at = None;
-                    break;
-                }
-                let mut next = image.current_frame + 1;
-                if next > image.frames.len() {
-                    next = 0;
-                    image.completed_loops = image.completed_loops.saturating_add(1);
-                    if image.loops > 1 && image.completed_loops >= image.loops - 1 {
-                        image.animation_state = AnimationState::Stopped;
-                        image.next_frame_at = None;
-                        break;
-                    }
-                }
-                image.current_frame = next;
-                self.serial = self.serial.saturating_add(1);
-                image.content_generation = self.serial;
-                let gap = if next == 0 { image.root_gap_ms } else { image.frames[next - 1].gap_ms };
+                let gap = frame_gap_ms(image, image.current_frame);
                 image.next_frame_at = if gap < 0 {
                     Some(now)
                 } else {
                     Some(now + Duration::from_millis(gap.max(1) as u64))
                 };
+            }
+            while image.next_frame_at.is_some_and(|deadline| deadline <= now) {
+                match next_automatic_frame(image) {
+                    AutomaticFrame::Display { index, wraps } => {
+                        image.completed_loops = image.completed_loops.saturating_add(wraps);
+                        if image.current_frame != index {
+                            image.current_frame = index;
+                            self.serial = self.serial.saturating_add(1);
+                            image.content_generation = self.serial;
+                        }
+                        let gap = frame_gap_ms(image, index);
+                        image.next_frame_at = Some(now + Duration::from_millis(gap.max(1) as u64));
+                    },
+                    AutomaticFrame::Stop { wraps } => {
+                        image.completed_loops = image.completed_loops.saturating_add(wraps);
+                        image.animation_state = AnimationState::Stopped;
+                        image.next_frame_at = None;
+                        break;
+                    },
+                    AutomaticFrame::Park | AutomaticFrame::Idle => {
+                        image.next_frame_at = None;
+                        break;
+                    },
+                }
             }
             if let Some(deadline) = image.next_frame_at {
                 next_deadline =
@@ -1006,6 +1006,44 @@ impl GraphicsState {
             }
         }
     }
+}
+
+enum AutomaticFrame {
+    Display { index: usize, wraps: u32 },
+    Stop { wraps: u32 },
+    Park,
+    Idle,
+}
+
+fn frame_gap_ms(image: &Image, index: usize) -> i32 {
+    if index == 0 { image.root_gap_ms } else { image.frames[index - 1].gap_ms }
+}
+
+fn next_automatic_frame(image: &Image) -> AutomaticFrame {
+    let last = image.frames.len();
+    let mut index = image.current_frame;
+    let mut wraps: u32 = 0;
+    for _ in 0..=last {
+        if image.animation_state == AnimationState::Loading && index == last {
+            return AutomaticFrame::Park;
+        }
+        index += 1;
+        if index > last {
+            if image.animation_state == AnimationState::Loading {
+                return AutomaticFrame::Park;
+            }
+            wraps = wraps.saturating_add(1);
+            let completed = image.completed_loops.saturating_add(wraps);
+            if image.loops > 1 && completed >= image.loops - 1 {
+                return AutomaticFrame::Stop { wraps };
+            }
+            index = 0;
+        }
+        if frame_gap_ms(image, index) >= 0 {
+            return AutomaticFrame::Display { index, wraps };
+        }
+    }
+    AutomaticFrame::Idle
 }
 
 fn scaled_cells(
@@ -1422,6 +1460,154 @@ mod tests {
             state.image_by_id(NonZeroU32::new(1).unwrap()).unwrap().pixels().bytes(),
             &[2; 4]
         );
+    }
+
+    #[test]
+    fn gapless_frames_are_skipped_without_a_display_deadline() {
+        let mut state = GraphicsState::new(16);
+        let image = Command { image_id: Some(1), ..Default::default() };
+        state.store(&image, pixels(1, 4)).unwrap();
+        state
+            .store_frame(
+                &Command { image_id: Some(1), z_index: Some(-1), ..Default::default() },
+                pixels(2, 4),
+            )
+            .unwrap();
+        state
+            .store_frame(
+                &Command { image_id: Some(1), z_index: Some(20), ..Default::default() },
+                pixels(3, 4),
+            )
+            .unwrap();
+        state.place(&image, Point::default()).unwrap();
+        state
+            .control_animation(&Command {
+                image_id: Some(1),
+                width: Some(3),
+                rows: Some(1),
+                z_index: Some(10),
+                ..Default::default()
+            })
+            .unwrap();
+
+        let start = Instant::now();
+        state.advance_animations(start);
+        state.advance_animations(start + Duration::from_millis(10));
+        let image = state.image_by_id(NonZeroU32::new(1).unwrap()).unwrap();
+        assert_eq!(image.current_frame, 2);
+        assert_eq!(image.pixels().bytes(), &[3; 4]);
+    }
+
+    #[test]
+    fn finite_animation_never_finishes_on_gapless_frame() {
+        let mut state = GraphicsState::new(8);
+        let command = Command { image_id: Some(1), ..Default::default() };
+        state.store(&command, pixels(1, 4)).unwrap();
+        state.place(&command, Point::default()).unwrap();
+        state
+            .store_frame(
+                &Command { image_id: Some(1), z_index: Some(-1), ..Default::default() },
+                pixels(2, 4),
+            )
+            .unwrap();
+        state
+            .control_animation(&Command {
+                image_id: Some(1),
+                rows: Some(1),
+                z_index: Some(10),
+                width: Some(3),
+                height: Some(2),
+                ..Default::default()
+            })
+            .unwrap();
+        let now = Instant::now();
+        state.advance_animations(now);
+        state.advance_animations(now + Duration::from_millis(10));
+        let image = state.image_by_id(NonZeroU32::new(1).unwrap()).unwrap();
+        assert_eq!(image.pixels().bytes(), &[1; 4]);
+        assert_eq!(image.current_frame, 0);
+        assert_eq!(image.animation_state, AnimationState::Stopped);
+    }
+
+    #[test]
+    fn initial_gapless_frame_is_skipped_when_animation_starts() {
+        let mut state = GraphicsState::new(8);
+        let image = Command { image_id: Some(1), ..Default::default() };
+        state.store(&image, pixels(1, 4)).unwrap();
+        state
+            .store_frame(
+                &Command { image_id: Some(1), z_index: Some(10), ..Default::default() },
+                pixels(2, 4),
+            )
+            .unwrap();
+        state.place(&image, Point::default()).unwrap();
+        state
+            .control_animation(&Command {
+                image_id: Some(1),
+                width: Some(3),
+                rows: Some(1),
+                z_index: Some(-1),
+                ..Default::default()
+            })
+            .unwrap();
+        let deadline = state.advance_animations(Instant::now());
+        let image = state.image_by_id(NonZeroU32::new(1).unwrap()).unwrap();
+        assert_eq!(image.current_frame, 1);
+        assert_eq!(image.pixels().bytes(), &[2; 4]);
+        assert_eq!(deadline, Some(Duration::from_millis(10)));
+    }
+
+    #[test]
+    fn all_gapless_animation_does_not_publish_or_busy_poll() {
+        let mut state = GraphicsState::new(8);
+        let image = Command { image_id: Some(1), ..Default::default() };
+        state.store(&image, pixels(1, 4)).unwrap();
+        state
+            .store_frame(
+                &Command { image_id: Some(1), z_index: Some(-1), ..Default::default() },
+                pixels(2, 4),
+            )
+            .unwrap();
+        state.place(&image, Point::default()).unwrap();
+        state
+            .control_animation(&Command {
+                image_id: Some(1),
+                width: Some(3),
+                rows: Some(1),
+                z_index: Some(-1),
+                ..Default::default()
+            })
+            .unwrap();
+        let start = Instant::now();
+        let handle = state.command_image_handle(&image).unwrap();
+        let generation = state.images[&handle].content_generation;
+        assert_eq!(state.advance_animations(start), None);
+        assert_eq!(state.images[&handle].current_frame, 0);
+        assert_eq!(state.images[&handle].pixels().bytes(), &[1; 4]);
+        assert_eq!(state.images[&handle].content_generation, generation);
+        assert!(state.images[&handle].next_frame_at.is_none());
+        assert_eq!(state.advance_animations(start + Duration::from_millis(1)), None);
+        assert_eq!(state.images[&handle].current_frame, 0);
+        assert_eq!(state.images[&handle].content_generation, generation);
+        assert!(state.images[&handle].next_frame_at.is_none());
+    }
+
+    #[test]
+    fn stopping_animation_resets_completed_loop_count() {
+        let mut state = GraphicsState::new(8);
+        let image = Command { image_id: Some(1), ..Default::default() };
+        state.store(&image, pixels(1, 4)).unwrap();
+        state
+            .store_frame(&Command { image_id: Some(1), ..Default::default() }, pixels(2, 4))
+            .unwrap();
+        let handle = state.command_image_handle(&image).unwrap();
+        state.images.get_mut(&handle).unwrap().completed_loops = 3;
+
+        state
+            .control_animation(&Command { image_id: Some(1), width: Some(1), ..Default::default() })
+            .unwrap();
+
+        assert_eq!(state.images.get(&handle).unwrap().completed_loops, 0);
     }
 
     #[test]
