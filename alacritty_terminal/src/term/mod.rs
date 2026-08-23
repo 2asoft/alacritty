@@ -1020,9 +1020,8 @@ impl<T> Term<T> {
         // Scroll selection.
         self.selection = self.selection.take().and_then(|s| s.rotate(self, &region, lines as i32));
 
-        let history_size = self.history_size();
-        self.graphics.scroll_up(&region, lines, history_size);
         self.grid.scroll_up(&region, lines);
+        self.graphics.scroll_up(&region, lines, self.history_size());
 
         // Scroll vi mode cursor.
         let viewport_top = Line(-(self.grid.display_offset() as i32));
@@ -2833,6 +2832,21 @@ mod tests {
         let responses = responses.lock().unwrap();
         assert_eq!(responses[0], "\x1b_Gi=31;OK\x1b\\");
         assert!(responses[1].starts_with("\x1b[?"));
+    }
+
+    #[test]
+    fn first_scroll_retains_graphics_anchor_in_new_history() {
+        let size = TermSize::new(5, 10);
+        let mut term = Term::new(Config::default(), &size, VoidListener);
+        let command = GraphicsCommand { image_id: Some(1), ..Default::default() };
+        let pixels = crate::graphics::PixelBuffer::from_rgba(1, 1, Arc::from([1, 2, 3, 4]));
+        term.graphics.store(&command, pixels).unwrap();
+        term.graphics.place(&command, Point::new(Line(0), Column(0))).unwrap();
+
+        term.scroll_up_relative(Line(0), 1);
+
+        assert_eq!(term.graphics.placements().next().unwrap().anchor().line, Line(-1));
+        assert_eq!(term.history_size(), 1);
     }
 
     #[test]
