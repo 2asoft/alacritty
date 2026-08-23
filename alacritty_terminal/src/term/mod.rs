@@ -848,13 +848,13 @@ impl<T> Term<T> {
         }
         processed.set_anchor(self.deferred_graphics_anchor.take());
         match processed {
-            ProcessedCommand::Decoded { command, image }
+            ProcessedCommand::Decoded { mut command, image }
                 if command.action == Some(GraphicsAction::TransmitFrame) =>
             {
-                let result = self
-                    .graphics
-                    .store_frame(&command, image)
-                    .map(|_| std::num::NonZeroU32::new(command.image_id.unwrap_or(0)));
+                let result = self.graphics.store_frame(&command, image).map(|frame| {
+                    command.rows = Some(frame);
+                    std::num::NonZeroU32::new(command.image_id.unwrap_or(0))
+                });
                 self.graphics_response(&command, result);
             },
             ProcessedCommand::Decoded { command, image } => {
@@ -984,6 +984,11 @@ impl<T> Term<T> {
         }
         if let Some(placement) = command.placement_id.filter(|placement| *placement != 0) {
             response.push_str(&format!(",p={placement}"));
+        }
+        if command.action == Some(GraphicsAction::TransmitFrame) {
+            if let Some(frame) = command.rows {
+                response.push_str(&format!(",r={frame}"));
+            }
         }
         response.push(';');
         response.push_str(message);
@@ -2963,6 +2968,35 @@ mod tests {
         term.commit_graphics_command(crate::graphics::process_command(command, 4, true));
 
         assert_eq!(responses.lock().unwrap().as_slice(), ["\x1b_Gi=0;EINVAL\x1b\\"]);
+    }
+
+    #[test]
+    fn kitty_frame_response_includes_created_frame_number() {
+        let size = TermSize::new(5, 10);
+        let config = Config {
+            graphics: GraphicsConfig { enabled: true, ..Default::default() },
+            ..Default::default()
+        };
+        let listener = RecordingListener::default();
+        let responses = listener.0.clone();
+        let mut term = Term::new(config, &size, listener);
+        term.graphics
+            .store(
+                &GraphicsCommand { image_id: Some(1), ..Default::default() },
+                crate::graphics::PixelBuffer::from_rgba(1, 1, Arc::from([1, 2, 3, 4])),
+            )
+            .unwrap();
+
+        term.commit_graphics_command(ProcessedCommand::Decoded {
+            command: GraphicsCommand {
+                action: Some(GraphicsAction::TransmitFrame),
+                image_id: Some(1),
+                ..Default::default()
+            },
+            image: crate::graphics::PixelBuffer::from_rgba(1, 1, Arc::from([5, 6, 7, 8])),
+        });
+
+        assert_eq!(responses.lock().unwrap().as_slice(), ["\x1b_Gi=1,r=2;OK\x1b\\"]);
     }
 
     #[test]

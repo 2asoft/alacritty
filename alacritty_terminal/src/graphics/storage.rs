@@ -274,7 +274,7 @@ impl GraphicsState {
         let selector = selector.to_ascii_lowercase();
         let placement_id = NonZeroU32::new(command.placement_id.unwrap_or(0));
         if selector == b'f' {
-            return self.delete_frames(command);
+            return self.delete_frames(command, free_data);
         }
 
         let explicit_image = match selector {
@@ -496,33 +496,40 @@ impl GraphicsState {
         }
     }
 
-    fn delete_frames(&mut self, command: &Command) -> Result<(), GraphicsError> {
+    fn delete_frames(&mut self, command: &Command, free_data: bool) -> Result<(), GraphicsError> {
         let handle = self.command_image_handle(command)?;
+        let image = self.images.get(&handle).ok_or(GraphicsError::NotFound)?;
+        if image.frames.is_empty() {
+            if free_data {
+                self.remove(handle);
+            }
+            return Ok(());
+        }
+
+        let frame_count = image.frames.len() + 1;
+        let frame = command.rows.unwrap_or(1).max(1) as usize;
+        let index = frame.saturating_sub(1).min(frame_count - 1);
         let image = self.images.get_mut(&handle).ok_or(GraphicsError::NotFound)?;
-        let (removed_bytes, removed_frames) =
-            if let Some(index) = command.rows.and_then(|frame| frame.checked_sub(2)) {
-                let index = index as usize;
-                if index >= image.frames.len() {
-                    return Err(GraphicsError::NotFound);
-                }
-                let bytes = image.frames.remove(index).pixels.storage_bytes();
-                if image.current_frame == index + 1 {
-                    image.current_frame = 0;
-                } else if image.current_frame > index + 1 {
-                    image.current_frame -= 1;
-                }
-                (bytes, 1)
-            } else {
-                let bytes = image.frames.iter().map(|frame| frame.pixels.storage_bytes()).sum();
-                let frames = image.frames.len();
-                image.frames.clear();
-                image.current_frame = 0;
-                (bytes, frames)
-            };
+        let removed_bytes = if index == 0 {
+            let promoted = image.frames.remove(0);
+            let bytes = image.pixels.storage_bytes();
+            image.pixels = promoted.pixels;
+            image.root_gap_ms = promoted.gap_ms;
+            image.current_frame = image.current_frame.saturating_sub(1);
+            bytes
+        } else {
+            let bytes = image.frames.remove(index - 1).pixels.storage_bytes();
+            if image.current_frame > index {
+                image.current_frame -= 1;
+            } else if image.current_frame == index {
+                image.current_frame = index.min(image.frames.len());
+            }
+            bytes
+        };
         image.animation_state = AnimationState::Stopped;
         image.next_frame_at = None;
         self.used_bytes = self.used_bytes.saturating_sub(removed_bytes);
-        self.frame_count = self.frame_count.saturating_sub(removed_frames);
+        self.frame_count = self.frame_count.saturating_sub(1);
         self.serial = self.serial.checked_add(1).ok_or(GraphicsError::TooLarge)?;
         image.content_generation = self.serial;
         Ok(())
@@ -532,7 +539,7 @@ impl GraphicsState {
         &mut self,
         command: &Command,
         pixels: PixelBuffer,
-    ) -> Result<(), GraphicsError> {
+    ) -> Result<u32, GraphicsError> {
         let handle = self.command_image_handle(command)?;
         let image = self.images.get(&handle).ok_or(GraphicsError::NotFound)?;
         let edit_index =
@@ -559,13 +566,13 @@ impl GraphicsState {
             height: pixels.height(),
             overwrite: command.x_offset == Some(1),
         })?;
-        let old_bytes = edit_index
-            .filter(|index| *index != 0)
-            .and_then(|index| image.frames.get(index - 1))
-            .map_or(0, |frame| frame.pixels.storage_bytes());
-        if edit_index == Some(0) {
-            return Err(GraphicsError::Invalid);
-        }
+        let old_bytes =
+            edit_index.and_then(|index| image.frame(index)).map_or(0, PixelBuffer::storage_bytes);
+        let frame_number =
+            edit_index.map_or(image.frames.len() as u32 + 2, |index| index as u32 + 1);
+        let existing_gap = edit_index.map(|index| {
+            if index == 0 { image.root_gap_ms } else { image.frames[index - 1].gap_ms }
+        });
         if edit_index.is_none()
             && (image.frames.len() == MAX_FRAMES_PER_IMAGE
                 || self.frame_count == MAX_FRAMES_PER_BUFFER)
@@ -585,10 +592,20 @@ impl GraphicsState {
 
         self.serial = self.serial.checked_add(1).ok_or(GraphicsError::TooLarge)?;
         let image = self.images.get_mut(&handle).ok_or(GraphicsError::NotFound)?;
-        let gap_ms = command.z_index.filter(|gap| *gap != 0).unwrap_or(DEFAULT_FRAME_GAP_MS);
+        let gap_ms = command
+            .z_index
+            .filter(|gap| *gap != 0)
+            .map(|gap| gap.max(0))
+            .or(existing_gap)
+            .unwrap_or(DEFAULT_FRAME_GAP_MS);
         let frame = AnimationFrame { pixels: destination, gap_ms };
         if let Some(index) = edit_index {
-            image.frames[index - 1] = frame;
+            if index == 0 {
+                image.pixels = frame.pixels;
+                image.root_gap_ms = frame.gap_ms;
+            } else {
+                image.frames[index - 1] = frame;
+            }
             if image.current_frame == index {
                 image.content_generation = self.serial;
             }
@@ -597,7 +614,7 @@ impl GraphicsState {
             self.frame_count += 1;
         }
         self.used_bytes = target_usage;
-        Ok(())
+        Ok(frame_number)
     }
 
     pub fn compose_frames(&mut self, command: &Command) -> Result<(), GraphicsError> {
@@ -1106,6 +1123,123 @@ mod tests {
             0, 255, 0, 255, 0, 0, 255, 255
         ]);
         assert_eq!(state.used_bytes(), 16);
+    }
+
+    #[test]
+    fn edits_root_and_preserves_existing_frame_gap() {
+        let mut state = GraphicsState::new(32);
+        let image = Command { image_id: Some(1), ..Default::default() };
+        state.store(&image, pixels(1, 4)).unwrap();
+        assert_eq!(
+            state
+                .store_frame(
+                    &Command { image_id: Some(1), z_index: Some(77), ..Default::default() },
+                    pixels(2, 4),
+                )
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            state
+                .store_frame(
+                    &Command {
+                        image_id: Some(1),
+                        rows: Some(2),
+                        x_offset: Some(1),
+                        ..Default::default()
+                    },
+                    pixels(3, 4),
+                )
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            state
+                .store_frame(
+                    &Command {
+                        image_id: Some(1),
+                        rows: Some(1),
+                        x_offset: Some(1),
+                        ..Default::default()
+                    },
+                    pixels(4, 4),
+                )
+                .unwrap(),
+            1
+        );
+
+        let image = state.image_by_id(NonZeroU32::new(1).unwrap()).unwrap();
+        assert_eq!(image.pixels.bytes(), &[4; 4]);
+        assert_eq!(image.frames[0].pixels.bytes(), &[3; 4]);
+        assert_eq!(image.frames[0].gap_ms, 77);
+        assert_invariants(&state);
+    }
+
+    #[test]
+    fn deleting_animation_root_promotes_next_frame_and_uppercase_frees_root_only_image() {
+        let mut state = GraphicsState::new(32);
+        let image = Command { image_id: Some(1), ..Default::default() };
+        state.store(&image, pixels(1, 4)).unwrap();
+        state
+            .store_frame(
+                &Command { image_id: Some(1), z_index: Some(10), ..Default::default() },
+                pixels(2, 4),
+            )
+            .unwrap();
+        state
+            .store_frame(
+                &Command { image_id: Some(1), z_index: Some(20), ..Default::default() },
+                pixels(3, 4),
+            )
+            .unwrap();
+
+        state
+            .delete(
+                &Command {
+                    action: Some(Action::Delete),
+                    delete: Some(crate::graphics::DeleteTarget(b'f')),
+                    image_id: Some(1),
+                    ..Default::default()
+                },
+                Point::default(),
+                Line(0)..Line(1),
+            )
+            .unwrap();
+        let image = state.image_by_id(NonZeroU32::new(1).unwrap()).unwrap();
+        assert_eq!(image.pixels.bytes(), &[2; 4]);
+        assert_eq!(image.root_gap_ms, 10);
+        assert_eq!(image.frames.len(), 1);
+
+        state
+            .delete(
+                &Command {
+                    action: Some(Action::Delete),
+                    delete: Some(crate::graphics::DeleteTarget(b'f')),
+                    image_id: Some(1),
+                    rows: Some(99),
+                    ..Default::default()
+                },
+                Point::default(),
+                Line(0)..Line(1),
+            )
+            .unwrap();
+        assert!(state.image_by_id(NonZeroU32::new(1).unwrap()).is_some());
+        assert!(state.image_by_id(NonZeroU32::new(1).unwrap()).unwrap().frames.is_empty());
+
+        state
+            .delete(
+                &Command {
+                    action: Some(Action::Delete),
+                    delete: Some(crate::graphics::DeleteTarget(b'F')),
+                    image_id: Some(1),
+                    ..Default::default()
+                },
+                Point::default(),
+                Line(0)..Line(1),
+            )
+            .unwrap();
+        assert!(state.image_by_id(NonZeroU32::new(1).unwrap()).is_none());
+        assert_invariants(&state);
     }
 
     #[test]
