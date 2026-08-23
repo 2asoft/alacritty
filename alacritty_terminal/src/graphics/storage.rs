@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::num::NonZeroU32;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::index::{Line, Point};
@@ -12,8 +13,19 @@ use super::{
 
 pub const MAX_IMAGES_PER_BUFFER: usize = 4096;
 
+static NEXT_IMAGE_HANDLE: AtomicU64 = AtomicU64::new(1);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ImageHandle(u64);
+
+impl ImageHandle {
+    fn allocate() -> Result<Self, GraphicsError> {
+        NEXT_IMAGE_HANDLE
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |handle| handle.checked_add(1))
+            .map(Self)
+            .map_err(|_| GraphicsError::TooLarge)
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct Image {
@@ -82,7 +94,6 @@ pub struct GraphicsState {
     placements: Placements,
     used_bytes: usize,
     storage_limit: usize,
-    next_handle: u64,
     next_image_id: u32,
     serial: u64,
 }
@@ -95,7 +106,6 @@ impl GraphicsState {
             image_ids: Default::default(),
             placements: Default::default(),
             used_bytes: 0,
-            next_handle: 1,
             next_image_id: 1,
             serial: 0,
         }
@@ -717,8 +727,7 @@ impl GraphicsState {
             self.remove(handle);
         }
 
-        let handle = ImageHandle(self.next_handle);
-        self.next_handle = self.next_handle.checked_add(1).ok_or(GraphicsError::TooLarge)?;
+        let handle = ImageHandle::allocate()?;
         self.serial = self.serial.checked_add(1).ok_or(GraphicsError::TooLarge)?;
         let image = Image {
             handle,
