@@ -182,6 +182,42 @@ mod tests {
     }
 
     #[test]
+    fn animation_chunks_accept_kitty_and_explicit_frame_continuations() {
+        for action in [None, Some(Action::TransmitFrame)] {
+            let first = Command {
+                action: Some(Action::TransmitFrame),
+                image_id: Some(1),
+                more: Some(true),
+                quiet: Some(0),
+                payload: b"AAAA".to_vec(),
+                ..Default::default()
+            };
+            let continuation = Command {
+                action,
+                more: Some(false),
+                quiet: Some(1),
+                payload: b"AAAA".to_vec(),
+                ..Default::default()
+            };
+            let pending = PendingTransmission::start(first, 100).unwrap();
+            let PendingResult::Complete(GraphicsRequest::Chunked { command, .. }) =
+                pending.push(continuation, 100).unwrap()
+            else {
+                panic!("expected complete frame transmission");
+            };
+            assert_eq!(command.action, Some(Action::TransmitFrame));
+            assert_eq!(command.image_id, Some(1));
+            assert_eq!(command.quiet, Some(1));
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_nonfinal_base64_boundary() {
+        let first = Command { more: Some(true), payload: b"AAA".to_vec(), ..Default::default() };
+        assert_eq!(PendingTransmission::start(first, 100).unwrap_err(), GraphicsError::Invalid);
+    }
+
+    #[test]
     fn rejects_metadata_in_continuation() {
         let first = Command { more: Some(true), payload: b"AAAA".to_vec(), ..Default::default() };
         let continuation = Command {

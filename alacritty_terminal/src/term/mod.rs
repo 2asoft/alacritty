@@ -2915,6 +2915,7 @@ mod tests {
     use super::*;
 
     use std::mem;
+    use std::num::NonZeroU32;
     use std::sync::{Arc, Mutex};
 
     use crate::event::VoidListener;
@@ -3061,6 +3062,78 @@ mod tests {
         let responses = responses.lock().unwrap();
         assert_eq!(responses[0], "\x1b_Gi=31;OK\x1b\\");
         assert!(responses[1].starts_with("\x1b[?"));
+    }
+
+    #[test]
+    fn kitty_queries_quiet_levels_and_response_identity_follow_protocol() {
+        let size = TermSize::new(5, 10);
+        let listener = RecordingListener::default();
+        let responses = listener.0.clone();
+        let mut term = Term::new(Config::default(), &size, listener);
+        let original = GraphicsCommand { image_id: Some(31), ..Default::default() };
+        term.graphics
+            .store(
+                &original,
+                crate::graphics::PixelBuffer::from_rgba(1, 1, Arc::from([1, 2, 3, 4])),
+            )
+            .unwrap();
+
+        term.commit_graphics_command(ProcessedCommand::Decoded {
+            command: GraphicsCommand {
+                action: Some(GraphicsAction::Query),
+                image_id: Some(31),
+                ..Default::default()
+            },
+            image: crate::graphics::PixelBuffer::from_rgba(1, 1, Arc::from([9, 9, 9, 9])),
+        });
+        assert_eq!(
+            term.graphics.image_by_id(NonZeroU32::new(31).unwrap()).unwrap().pixels().bytes(),
+            &[1, 2, 3, 4]
+        );
+
+        term.commit_graphics_command(ProcessedCommand::Decoded {
+            command: GraphicsCommand {
+                image_number: Some(93),
+                quiet: Some(1),
+                ..Default::default()
+            },
+            image: crate::graphics::PixelBuffer::from_rgba(1, 1, Arc::from([5, 6, 7, 8])),
+        });
+        term.commit_graphics_command(ProcessedCommand::Error {
+            command: Some(GraphicsCommand {
+                image_id: Some(9),
+                quiet: Some(2),
+                ..Default::default()
+            }),
+            error: GraphicsError::Invalid,
+        });
+        assert_eq!(responses.lock().unwrap().as_slice(), ["\x1b_Gi=31;OK\x1b\\"]);
+
+        term.commit_graphics_command(ProcessedCommand::Decoded {
+            command: GraphicsCommand { image_number: Some(94), ..Default::default() },
+            image: crate::graphics::PixelBuffer::from_rgba(1, 1, Arc::from([5, 6, 7, 8])),
+        });
+        let generated = term.graphics.newest_by_number(94).unwrap().external_id().unwrap().get();
+        assert_eq!(
+            responses.lock().unwrap().last().unwrap(),
+            &format!("\x1b_Gi={generated},I=94;OK\x1b\\")
+        );
+
+        term.commit_graphics_command(ProcessedCommand::Metadata(GraphicsCommand {
+            action: Some(GraphicsAction::Place),
+            image_id: Some(31),
+            placement_id: Some(7),
+            ..Default::default()
+        }));
+        term.commit_graphics_command(ProcessedCommand::Metadata(GraphicsCommand {
+            action: Some(GraphicsAction::Place),
+            image_id: Some(404),
+            placement_id: Some(8),
+            ..Default::default()
+        }));
+        let responses = responses.lock().unwrap();
+        assert_eq!(responses[responses.len() - 2], "\x1b_Gi=31,p=7;OK\x1b\\");
+        assert_eq!(responses[responses.len() - 1], "\x1b_Gi=404,p=8;ENOENT\x1b\\");
     }
 
     #[test]
@@ -3227,6 +3300,40 @@ mod tests {
         assert_eq!(first + second, input.len() - 1);
         let image = term.graphics().image_by_id(std::num::NonZeroU32::new(9).unwrap()).unwrap();
         assert_eq!(image.pixels().bytes(), &[1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn kitty_chunking_uses_final_cursor_and_delete_aborts_pending_upload() {
+        let size = TermSize::new(10, 10);
+        let mut term = Term::new(Config::default(), &size, VoidListener);
+        let mut parser = ansi::Processor::<ansi::StdSyncHandler>::new();
+
+        parser.advance(&mut term, b"\x1b_Ga=T,i=1,f=32,s=1,v=1,m=1;AQID\x1b\\");
+        assert!(term.take_graphics_request().is_none());
+        term.goto(4, 5);
+        parser.advance(&mut term, b"\x1b_Gm=0;BA==\x1b\\");
+        let request = term.take_graphics_request().unwrap();
+        assert_eq!(request.anchor(), Some(Point::new(Line(4), Column(5))));
+        let options = term.graphics_processing_options_for(&request);
+        term.commit_graphics_command(crate::graphics::process_request(
+            request, options.0, options.1,
+        ));
+        assert_eq!(
+            term.graphics.placements().next().unwrap().anchor(),
+            Point::new(Line(4), Column(5))
+        );
+
+        parser.advance(&mut term, b"\x1b_Gi=2,f=32,s=1,v=1,m=1;AQID\x1b\\");
+        assert!(term.take_graphics_request().is_none());
+        parser.advance(&mut term, b"\x1b_Ga=d\x1b\\");
+        assert!(matches!(term.take_graphics_request(), Some(GraphicsRequest::Command(Ok(_)))));
+        parser.advance(&mut term, b"\x1b_Gi=2,f=32,s=1,v=1;AQIDBA==\x1b\\");
+        let request = term.take_graphics_request().unwrap();
+        let options = term.graphics_processing_options_for(&request);
+        term.commit_graphics_command(crate::graphics::process_request(
+            request, options.0, options.1,
+        ));
+        assert!(term.graphics.image_by_id(NonZeroU32::new(2).unwrap()).is_some());
     }
 
     #[test]
