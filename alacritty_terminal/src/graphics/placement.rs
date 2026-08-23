@@ -333,7 +333,7 @@ impl Placements {
                 }
                 .ok_or(GraphicsError::NoParent)?;
                 if Some(parent) == replaced {
-                    return Err(GraphicsError::Invalid);
+                    return Err(GraphicsError::Cycle);
                 }
                 let mut ancestor = Some(parent);
                 let mut depth = 0;

@@ -3157,6 +3157,31 @@ mod tests {
     }
 
     #[test]
+    fn reset_and_text_erasure_follow_graphics_lifecycle_rules() {
+        let size = TermSize::new(5, 10);
+        let mut term = Term::new(Config::default(), &size, VoidListener);
+        let command = GraphicsCommand { image_id: Some(1), ..Default::default() };
+        term.graphics
+            .store(&command, crate::graphics::PixelBuffer::from_rgba(1, 1, Arc::from([1, 2, 3, 4])))
+            .unwrap();
+        term.graphics.place(&command, Point::default()).unwrap();
+
+        term.clear_line(ansi::LineClearMode::All);
+        term.erase_chars(1);
+        term.delete_chars(1);
+        assert_eq!(term.graphics.placements().count(), 1);
+
+        term.grid[Point::default()].c = crate::graphics::PLACEHOLDER;
+        term.erase_chars(1);
+        assert_ne!(term.grid[Point::default()].c, crate::graphics::PLACEHOLDER);
+        assert_eq!(term.graphics.placements().count(), 1);
+
+        term.reset_state();
+        assert!(term.graphics.images().next().is_none());
+        assert!(term.graphics.placements().next().is_none());
+    }
+
+    #[test]
     fn disabling_local_graphics_transmission_cancels_deferred_commit() {
         let size = TermSize::new(5, 3);
         let mut term = Term::new(Config::default(), &size, VoidListener);

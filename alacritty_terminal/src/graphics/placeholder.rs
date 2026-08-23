@@ -107,6 +107,17 @@ mod tests {
     }
 
     #[test]
+    fn decodes_indexed_and_rgb_placement_ids_from_underline_color() {
+        let mut indexed = cell(Color::Indexed(42), &[ROW_COLUMN_DIACRITICS[0]]);
+        indexed.set_underline_color(Some(Color::Indexed(7)));
+        assert_eq!(decode_placeholder(&indexed, None).unwrap().placement_id, 7);
+
+        let mut rgb = cell(Color::Indexed(42), &[ROW_COLUMN_DIACRITICS[0]]);
+        rgb.set_underline_color(Some(Color::Spec(Rgb { r: 1, g: 2, b: 3 })));
+        assert_eq!(decode_placeholder(&rgb, None).unwrap().placement_id, 0x010203);
+    }
+
+    #[test]
     fn inherits_omitted_columns_left_to_right() {
         let first = cell(Color::Indexed(42), &['\u{30d}']);
         let first = decode_placeholder(&first, None).unwrap();
