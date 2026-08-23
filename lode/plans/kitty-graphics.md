@@ -1,6 +1,6 @@
 # Kitty graphics implementation plan
 
-Status: active
+Status: awaiting UX acceptance
 
 ## Outcome and acceptance
 
@@ -16,7 +16,7 @@ Implement the complete Kitty terminal graphics protocol described by the accepte
 - Virtual placements and explicit/inherited Unicode placeholder cells render from the complete authoritative generated diacritic table. Row and column indices cover the full table, high image-ID bytes remain byte-bounded, all inheritance conditions are tested, and location-based deletion excludes virtual placements.
 - Relative placements resolve classic and virtual parents, enforce an eight-link depth bound, reject missing parents and cycles atomically, follow parent movement, and cascade deletion and replacement lifetimes.
 - Animation frames load as quota-counted canonical RGBA canvases, support frame editing and alpha/overwrite composition, client-selected frames, stop/loading/run states, loop limits, frame gaps, frame deletion, and UI-scheduled playback deadlines. Broader animation corpus and stress validation remain pending.
-- Primary grid width changes reflow cells in `alacritty_terminal/src/grid/resize.rs`; no external points participate.
+- Primary grid width changes reflow cells in `alacritty_terminal/src/grid/resize.rs`; transient, serde-skipped cell markers apply the same mapping to classic and deferred graphics anchors without adding per-cell steady-state storage.
 - Terminal renderable state is collected under lock, while OpenGL work occurs after lock release. Without placements, rendering skips history/viewport placeholder scans and image snapshot allocation.
 
 ## Accepted decisions
@@ -27,7 +27,7 @@ Implement the complete Kitty terminal graphics protocol described by the accepte
 - Heavy transport and decode work forms an ordered parser barrier and runs outside `Term`'s mutex.
 - Classic placements are independent terminal objects with reflow-aware anchors. Placeholder instances remain ordinary cells.
 - Local transports default on but have a configuration kill switch.
-- Complete support defaults on only after conformance and hardening are complete.
+- Complete support defaults on only after conformance and hardening are complete. The operator chose to keep it disabled for a manual UX review after automated validation, before final default enablement.
 
 ## Ordered goals
 
@@ -41,7 +41,7 @@ Implement the complete Kitty terminal graphics protocol described by the accepte
 8. [x] Implement Unicode placeholders from authoritative generated combining-mark data.
 9. [x] Implement relative placement graph semantics.
 10. [x] Implement animation frame loading, composition, control, deletion, and deadline scheduling.
-11. [ ] Complete hostile-input, property, fuzz, renderer-golden, context-loss, and performance validation; enable by default. Stateful stream fuzzing (10,000 instrumented libFuzzer runs with no findings) and an isolated semantic-framebuffer/repeated-redraw screenshot smoke harness that discards and reconstructs image textures every pass are in place. A 10-run release benchmark measured the graphics-enabled ordinary-text parser at 0.909x the disabled baseline (no regression).
+11. [ ] Complete hostile-input, property, fuzz, renderer-golden, context-loss, and performance validation; enable by default after manual UX acceptance. Stateful stream fuzzing (10,000 instrumented libFuzzer runs with no findings) and an isolated semantic-framebuffer/repeated-redraw screenshot smoke harness that discards and reconstructs image textures every pass are in place. A fresh 10-run release benchmark measured the graphics-enabled ordinary-text parser at 0.962x the disabled baseline (no regression).
 
 Each goal stops only after its focused tests, adjacent suites, formatting, linting, docs, and Lode state pass. Commit verified coherent increments separately.
 
