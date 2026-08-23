@@ -46,6 +46,9 @@ fn read_file(path: PathBuf, command: &Command, limit: usize) -> Result<Vec<u8>, 
         return Err(GraphicsError::Io);
     }
     let mut file = open_read_only(&path)?;
+    if opened_file_is_sensitive(&file) {
+        return Err(GraphicsError::Io);
+    }
     read_regular_range(&mut file, command, limit)
 }
 
@@ -93,6 +96,33 @@ fn read_regular_range(
     let mut data = vec![0; requested];
     file.read_exact(&mut data).map_err(|_| GraphicsError::Io)?;
     Ok(data)
+}
+
+#[cfg(target_os = "linux")]
+fn opened_file_is_sensitive(file: &File) -> bool {
+    use std::os::fd::AsRawFd;
+
+    let descriptor = file.as_raw_fd();
+    let mut filesystem = std::mem::MaybeUninit::<libc::statfs>::uninit();
+    // SAFETY: `filesystem` points to writable storage for `fstatfs`, and `descriptor` remains
+    // owned by `file` for the duration of the call.
+    if unsafe { libc::fstatfs(descriptor, filesystem.as_mut_ptr()) } != 0 {
+        return true;
+    }
+    // SAFETY: A successful `fstatfs` initialized the entire output structure.
+    let filesystem = unsafe { filesystem.assume_init() };
+    if filesystem.f_type as libc::c_long == libc::PROC_SUPER_MAGIC as libc::c_long
+        || filesystem.f_type as libc::c_long == libc::SYSFS_MAGIC as libc::c_long
+    {
+        return true;
+    }
+
+    fs::read_link(format!("/proc/self/fd/{descriptor}")).map_or(true, |path| sensitive_path(&path))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn opened_file_is_sensitive(_file: &File) -> bool {
+    false
 }
 
 fn sensitive_path(path: &Path) -> bool {
@@ -232,6 +262,20 @@ mod tests {
 
         assert_eq!(load_transport(Transmission::SharedMemory, &command, 4).unwrap(), [1, 2, 3, 4]);
         assert_eq!(unsafe { libc::shm_open(c_name.as_ptr(), libc::O_RDONLY, 0) }, -1);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn rejects_symlinks_to_proc_files_after_open() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir().unwrap();
+        let link = directory.path().join("regular-looking-file");
+        symlink("/proc/self/environ", &link).unwrap();
+        assert_eq!(
+            load_transport(Transmission::File, &command(&link), 4096),
+            Err(GraphicsError::Io)
+        );
     }
 
     #[cfg(unix)]
