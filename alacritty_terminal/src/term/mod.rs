@@ -343,6 +343,9 @@ pub struct Term<T> {
     /// Incomplete direct chunk transmission.
     pending_graphics_transmission: Option<PendingTransmission>,
 
+    /// Placement anchor currently undergoing deferred graphics processing.
+    deferred_graphics_anchor: Option<Point>,
+
     /// Graphics state paired with the active grid.
     graphics: GraphicsState,
 
@@ -431,14 +434,26 @@ pub enum Osc52 {
 fn resize_grid_with_graphics(
     grid: &mut Grid<Cell>,
     graphics: &mut GraphicsState,
+    mut deferred_anchor: Option<&mut Option<Point>>,
     reflow: bool,
     lines: usize,
     columns: usize,
 ) {
+    const DEFERRED_ANCHOR: u64 = u64::MAX;
+
     let tracked_anchors = graphics.tracked_anchors();
-    if tracked_anchors.is_empty() {
+    let pending_point = deferred_anchor.as_deref().copied().flatten();
+    if tracked_anchors.is_empty() && pending_point.is_none() {
         grid.resize(reflow, lines, columns);
         return;
+    }
+    if let Some(point) = pending_point {
+        if point.line >= grid.topmost_line()
+            && point.line <= grid.bottommost_line()
+            && point.column.0 < grid.columns()
+        {
+            grid[point].push_graphics_anchor(DEFERRED_ANCHOR);
+        }
     }
     for (handle, point) in tracked_anchors {
         if point.line >= grid.topmost_line()
@@ -459,6 +474,9 @@ fn resize_grid_with_graphics(
                 anchors.insert(PlacementHandle(handle), point);
             }
         }
+    }
+    if let Some(deferred_anchor) = deferred_anchor.as_mut() {
+        **deferred_anchor = anchors.remove(&PlacementHandle(DEFERRED_ANCHOR));
     }
     graphics.update_tracked_anchors(&anchors);
 }
@@ -524,6 +542,7 @@ impl<T> Term<T> {
             graphics_parser: Default::default(),
             graphics_command: None,
             pending_graphics_transmission: None,
+            deferred_graphics_anchor: None,
             graphics: GraphicsState::new(graphics_storage_limit),
             inactive_graphics: GraphicsState::new(graphics_storage_limit),
         }
@@ -612,6 +631,7 @@ impl<T> Term<T> {
             self.graphics_parser.abort();
             self.graphics_command = None;
             self.pending_graphics_transmission = None;
+            self.deferred_graphics_anchor = None;
             self.graphics.clear();
             self.inactive_graphics.clear();
         }
@@ -781,16 +801,21 @@ impl<T> Term<T> {
         }
     }
 
+    pub fn begin_graphics_processing(&mut self, request: &GraphicsRequest) {
+        self.deferred_graphics_anchor = request.anchor();
+    }
+
     /// Options required to process a deferred graphics command outside the terminal lock.
     pub fn graphics_processing_options(&self) -> (usize, bool) {
         (self.config.graphics.storage_limit, self.config.graphics.local_transmission)
     }
 
     /// Commit a graphics command processed outside the terminal lock.
-    pub fn commit_graphics_command(&mut self, processed: ProcessedCommand)
+    pub fn commit_graphics_command(&mut self, mut processed: ProcessedCommand)
     where
         T: EventListener,
     {
+        processed.set_anchor(self.deferred_graphics_anchor.take());
         match processed {
             ProcessedCommand::Decoded { command, image }
                 if command.action == Some(GraphicsAction::TransmitFrame) =>
@@ -952,10 +977,18 @@ impl<T> Term<T> {
         self.vi_mode_cursor.point.line += delta;
 
         let is_alt = self.mode.contains(TermMode::ALT_SCREEN);
-        resize_grid_with_graphics(&mut self.grid, &mut self.graphics, !is_alt, num_lines, num_cols);
+        resize_grid_with_graphics(
+            &mut self.grid,
+            &mut self.graphics,
+            Some(&mut self.deferred_graphics_anchor),
+            !is_alt,
+            num_lines,
+            num_cols,
+        );
         resize_grid_with_graphics(
             &mut self.inactive_grid,
             &mut self.inactive_graphics,
+            None,
             is_alt,
             num_lines,
             num_cols,
@@ -2902,6 +2935,25 @@ mod tests {
         term.graphics.place(&command, Point::default()).unwrap();
         term.clear_screen(ansi::ClearMode::All);
         assert!(term.graphics.placements().next().is_none());
+    }
+
+    #[test]
+    fn deferred_graphics_anchor_follows_width_reflow() {
+        let size = TermSize::new(10, 3);
+        let mut term = Term::new(Config::default(), &size, VoidListener);
+        for column in 0..10 {
+            term.grid[Line(0)][Column(column)].c = if column == 6 { 'X' } else { 'a' };
+        }
+        term.grid[Line(0)][Column(9)].flags.insert(Flags::WRAPLINE);
+        term.begin_graphics_processing(&GraphicsRequest::Command(Ok(GraphicsCommand {
+            anchor: Some(Point::new(Line(0), Column(6))),
+            ..Default::default()
+        })));
+
+        term.resize(TermSize::new(5, 3));
+
+        let anchor = term.deferred_graphics_anchor.unwrap();
+        assert_eq!(term.grid[anchor].c, 'X');
     }
 
     #[test]

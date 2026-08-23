@@ -6,6 +6,15 @@ pub enum GraphicsRequest {
     Chunked { command: Command, chunks: Vec<Vec<u8>> },
 }
 
+impl GraphicsRequest {
+    pub fn anchor(&self) -> Option<crate::index::Point> {
+        match self {
+            Self::Command(Ok(command)) | Self::Chunked { command, .. } => command.anchor,
+            Self::Command(Err(_)) => None,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct PendingTransmission {
     command: Command,

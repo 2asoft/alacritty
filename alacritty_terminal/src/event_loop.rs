@@ -156,6 +156,9 @@ where
             let consumed =
                 state.parser.advance_until_terminated(&mut **terminal_guard, &buf[..unprocessed]);
             let request = terminal_guard.take_graphics_request();
+            if let Some(request) = &request {
+                terminal_guard.begin_graphics_processing(request);
+            }
             let graphics_options = terminal_guard.graphics_processing_options();
             processed += consumed;
             buf.copy_within(consumed..unprocessed, 0);

@@ -63,6 +63,18 @@ pub enum ProcessedCommand {
     Error { command: Option<Command>, error: GraphicsError },
 }
 
+impl ProcessedCommand {
+    pub fn set_anchor(&mut self, anchor: Option<crate::index::Point>) {
+        let command = match self {
+            Self::Decoded { command, .. } | Self::Metadata(command) => Some(command),
+            Self::Error { command, .. } => command.as_mut(),
+        };
+        if let Some(command) = command {
+            command.anchor = anchor.or(command.anchor);
+        }
+    }
+}
+
 pub fn process_command(
     command: Result<Command, GraphicsError>,
     storage_limit: usize,
