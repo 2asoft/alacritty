@@ -980,6 +980,24 @@ mod tests {
 
     use super::*;
 
+    fn assert_invariants(state: &GraphicsState) {
+        assert_eq!(
+            state.used_bytes,
+            state.images.values().map(Image::storage_bytes).sum::<usize>()
+        );
+        assert!(state.used_bytes <= state.storage_limit);
+        assert_eq!(
+            state.frame_count,
+            state.images.values().map(|image| image.frames.len()).sum::<usize>()
+        );
+        assert!(
+            state.placements.values().all(|placement| state.images.contains_key(&placement.image))
+        );
+        assert!(state.image_ids.iter().all(|(id, handle)| {
+            state.images.get(handle).is_some_and(|image| image.external_id == Some(*id))
+        }));
+    }
+
     fn pixels(value: u8, bytes: usize) -> PixelBuffer {
         PixelBuffer::from_rgba(1, 1, Arc::from(vec![value; bytes]))
     }
@@ -1251,6 +1269,43 @@ mod tests {
 
         assert_eq!(state.decode_limit(&Command { image_id: Some(2), ..Default::default() }), 4);
         assert_eq!(state.decode_limit(&existing), 8);
+    }
+
+    #[test]
+    fn randomized_operations_preserve_graphics_state_invariants() {
+        let mut state = GraphicsState::new(64);
+        let mut random = 0x4b1d_5eed_u64;
+        for _ in 0..5_000 {
+            random ^= random << 13;
+            random ^= random >> 7;
+            random ^= random << 17;
+            let id = (random as u32 % 8) + 1;
+            let command = Command { image_id: Some(id), ..Default::default() };
+            match (random >> 8) % 5 {
+                0 => {
+                    let _ = state.store(&command, pixels(id as u8, 4));
+                },
+                1 => {
+                    let _ = state.place(
+                        &Command { placement_id: Some(((random >> 16) as u32 % 4) + 1), ..command },
+                        Point::new(
+                            Line((random as i32 % 8).abs()),
+                            crate::index::Column(id as usize),
+                        ),
+                    );
+                },
+                2 => {
+                    let _ = state.delete(
+                        &Command { delete: Some(crate::graphics::DeleteTarget(b'i')), ..command },
+                        Point::default(),
+                        Line(0)..Line(8),
+                    );
+                },
+                3 => state.set_storage_limit(((random >> 24) as usize % 16 + 1) * 4),
+                _ => state.scroll_up(&(Line(0)..Line(8)), 1, 8, true),
+            }
+            assert_invariants(&state);
+        }
     }
 
     #[test]
