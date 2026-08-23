@@ -135,7 +135,11 @@ fn decode_source(
                 .map_err(|_| GraphicsError::TooLarge)?,
             Format::Unknown(_) => return Err(GraphicsError::Invalid),
         };
-        if decompressed_limit > storage_limit {
+        let source_limit = match command.format.unwrap_or_default() {
+            Format::Png => storage_limit.saturating_add(MAX_PNG_DECODER_OVERHEAD),
+            _ => storage_limit,
+        };
+        if decompressed_limit > source_limit {
             return Err(GraphicsError::NoSpace);
         }
         source = decompress_to_vec_zlib_with_limit(&source, decompressed_limit)
@@ -305,6 +309,24 @@ mod tests {
     }
 
     #[test]
+    fn applies_default_transmit_rgba_and_requires_raw_dimensions() {
+        let command = Command {
+            payload: Base64.encode([1, 2, 3, 4]).into_bytes(),
+            width: Some(1),
+            height: Some(1),
+            ..Default::default()
+        };
+        assert_eq!(decoded(command, 4).unwrap().bytes(), &[1, 2, 3, 4]);
+        assert_eq!(
+            decoded(
+                Command { payload: Base64.encode([1, 2, 3, 4]).into_bytes(), ..Default::default() },
+                4
+            ),
+            Err(GraphicsError::Invalid)
+        );
+    }
+
+    #[test]
     fn converts_rgb_to_canonical_rgba() {
         let image = decoded(direct(Format::Rgb, 2, 1, &[1, 2, 3, 4, 5, 6]), 8).unwrap();
         assert_eq!(image.bytes(), &[1, 2, 3, 255, 4, 5, 6, 255]);
@@ -365,6 +387,22 @@ mod tests {
     }
 
     #[test]
+    fn decompresses_rgb_and_png_with_declared_png_size() {
+        let rgb = miniz_oxide::deflate::compress_to_vec_zlib(&[1, 2, 3], 6);
+        let mut command = direct(Format::Rgb, 1, 1, &rgb);
+        command.compression = Some(Compression::Zlib);
+        assert_eq!(decoded(command, 4).unwrap().bytes(), &[1, 2, 3, 255]);
+
+        let source = png(ColorType::Rgba, png::BitDepth::Eight, &[1, 2, 3, 4]);
+        let compressed = miniz_oxide::deflate::compress_to_vec_zlib(&source, 6);
+        let mut command = direct(Format::Png, 0, 0, &compressed);
+        command.compression = Some(Compression::Zlib);
+        assert_eq!(decoded(command.clone(), 4), Err(GraphicsError::Invalid));
+        command.data_size = Some(source.len() as u32);
+        assert_eq!(decoded(command, 4).unwrap().bytes(), &[1, 2, 3, 4]);
+    }
+
+    #[test]
     fn normalizes_ordinary_png_color_types_and_depths() {
         for (color, depth, source, expected) in [
             (ColorType::Grayscale, png::BitDepth::Eight, vec![12], vec![12, 12, 12, 255]),
@@ -372,7 +410,20 @@ mod tests {
             (ColorType::Rgb, png::BitDepth::Eight, vec![1, 2, 3], vec![1, 2, 3, 255]),
             (ColorType::Rgba, png::BitDepth::Eight, vec![1, 2, 3, 4], vec![1, 2, 3, 4]),
             (ColorType::Indexed, png::BitDepth::Eight, vec![0], vec![10, 20, 30, 40]),
+            (ColorType::Grayscale, png::BitDepth::One, vec![0], vec![0, 0, 0, 255]),
+            (ColorType::Grayscale, png::BitDepth::Two, vec![0], vec![0, 0, 0, 255]),
+            (ColorType::Grayscale, png::BitDepth::Four, vec![0], vec![0, 0, 0, 255]),
+            (ColorType::Indexed, png::BitDepth::One, vec![0], vec![10, 20, 30, 40]),
+            (ColorType::Indexed, png::BitDepth::Two, vec![0], vec![10, 20, 30, 40]),
+            (ColorType::Indexed, png::BitDepth::Four, vec![0], vec![10, 20, 30, 40]),
             (ColorType::Grayscale, png::BitDepth::Sixteen, vec![128, 0], vec![128, 128, 128, 255]),
+            (ColorType::GrayscaleAlpha, png::BitDepth::Sixteen, vec![128, 0, 64, 0], vec![
+                128, 128, 128, 64,
+            ]),
+            (ColorType::Rgb, png::BitDepth::Sixteen, vec![1, 0, 2, 0, 3, 0], vec![1, 2, 3, 255]),
+            (ColorType::Rgba, png::BitDepth::Sixteen, vec![1, 0, 2, 0, 3, 0, 4, 0], vec![
+                1, 2, 3, 4,
+            ]),
         ] {
             let decoded = decode_png(&png(color, depth, &source), 4)
                 .unwrap_or_else(|error| panic!("failed {color:?} {depth:?}: {error:?}"));
