@@ -14,6 +14,7 @@ use log::{debug, trace};
 use unicode_width::UnicodeWidthChar;
 
 use crate::event::{Event, EventListener};
+use crate::graphics::{Command as GraphicsCommand, GraphicsApcParser, GraphicsError};
 use crate::grid::{Dimensions, Grid, GridIterator, Scroll};
 use crate::index::{self, Boundary, Column, Direction, Line, Point, Side};
 use crate::selection::{Selection, SelectionRange, SelectionType};
@@ -327,6 +328,12 @@ pub struct Term<T> {
 
     /// Config directly for the terminal.
     config: Config,
+
+    /// Streaming parser for the current APC graphics command.
+    graphics_parser: GraphicsApcParser,
+
+    /// Completed command waiting at the ordered PTY parser barrier.
+    graphics_command: Option<Result<GraphicsCommand, GraphicsError>>,
 }
 
 /// Configuration options for the [`Term`].
@@ -441,6 +448,8 @@ impl<T> Term<T> {
             selection: Default::default(),
             title: Default::default(),
             mode: Default::default(),
+            graphics_parser: Default::default(),
+            graphics_command: None,
         }
     }
 
@@ -639,6 +648,11 @@ impl<T> Term<T> {
         T: EventListener,
     {
         RenderableContent::new(self)
+    }
+
+    /// Take the graphics command at the current ordered parser barrier.
+    pub fn take_graphics_command(&mut self) -> Option<Result<GraphicsCommand, GraphicsError>> {
+        self.graphics_command.take()
     }
 
     /// Access to the raw grid data structure.
@@ -1057,6 +1071,27 @@ impl<T> Dimensions for Term<T> {
 }
 
 impl<T: EventListener> Handler for Term<T> {
+    fn apc_start(&mut self) {
+        self.graphics_parser.start();
+    }
+
+    fn apc_put(&mut self, byte: u8) {
+        self.graphics_parser.put(byte);
+    }
+
+    fn apc_end(&mut self) -> bool {
+        if let Some(command) = self.graphics_parser.end() {
+            self.graphics_command = Some(command);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn apc_abort(&mut self) {
+        self.graphics_parser.abort();
+    }
+
     /// A character to be displayed.
     #[inline(never)]
     fn input(&mut self, c: char) {
@@ -2517,6 +2552,21 @@ mod tests {
     use crate::term::cell::{Cell, Flags};
     use crate::term::test::TermSize;
     use crate::vte::ansi::{self, CharsetIndex, Handler, StandardCharset};
+
+    #[test]
+    fn kitty_apc_stops_parser_at_command_boundary() {
+        let size = TermSize::new(5, 10);
+        let mut term = Term::new(Config::default(), &size, VoidListener);
+        let mut parser = ansi::Processor::<ansi::StdSyncHandler>::new();
+        let input = b"\x1b_Gi=42;AAAA\x1b\\after";
+
+        let consumed = parser.advance_until_terminated(&mut term, input);
+        let command = term.take_graphics_command().unwrap().unwrap();
+
+        assert_eq!(command.image_id, Some(42));
+        assert_eq!(command.payload, b"AAAA");
+        assert_eq!(&input[consumed..], b"\\after");
+    }
 
     #[test]
     fn scroll_display_page_up() {

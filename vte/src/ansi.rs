@@ -311,6 +311,26 @@ impl<T: Timeout> Processor<T> {
         }
     }
 
+    /// Process bytes until the handler requests an ordered barrier.
+    ///
+    /// Returns the number of consumed bytes. A result shorter than
+    /// `bytes.len()` means the caller must complete the handler's deferred
+    /// operation before passing the remaining suffix back to
+    /// this processor.
+    #[inline]
+    #[must_use = "the unconsumed input suffix must be retained"]
+    pub fn advance_until_terminated<H>(&mut self, handler: &mut H, bytes: &[u8]) -> usize
+    where
+        H: Handler,
+    {
+        if self.state.sync_state.timeout.pending_timeout() {
+            self.advance_sync(handler, bytes)
+        } else {
+            let mut performer = Performer::new(&mut self.state, handler);
+            self.parser.advance_until_terminated(&mut performer, bytes)
+        }
+    }
+
     /// End a synchronized update.
     pub fn stop_sync<H>(&mut self, handler: &mut H)
     where
@@ -678,6 +698,22 @@ pub trait Handler {
 
     /// Reset an indexed color to original value.
     fn reset_color(&mut self, _: usize) {}
+
+    /// Start an application program command string.
+    fn apc_start(&mut self) {}
+
+    /// Pass a byte from an application program command string.
+    fn apc_put(&mut self, _byte: u8) {}
+
+    /// Finish an application program command string.
+    ///
+    /// Returning `true` requests an ordered parser barrier after this APC.
+    fn apc_end(&mut self) -> bool {
+        false
+    }
+
+    /// Abort an application program command string after CAN or SUB.
+    fn apc_abort(&mut self) {}
 
     /// Store data into clipboard.
     fn clipboard_store(&mut self, _: u8, _: &[u8]) {}
@@ -1326,6 +1362,26 @@ where
     #[inline]
     fn unhook(&mut self) {
         debug!("[unhandled unhook]");
+    }
+
+    #[inline]
+    fn apc_start(&mut self) {
+        self.handler.apc_start();
+    }
+
+    #[inline]
+    fn apc_put(&mut self, byte: u8) {
+        self.handler.apc_put(byte);
+    }
+
+    #[inline]
+    fn apc_end(&mut self) {
+        self.terminated = self.handler.apc_end();
+    }
+
+    #[inline]
+    fn apc_abort(&mut self) {
+        self.handler.apc_abort();
     }
 
     #[inline]
@@ -2052,6 +2108,8 @@ mod tests {
         identity_reported: bool,
         color: Option<Rgb>,
         reset_colors: Vec<usize>,
+        apc: Vec<u8>,
+        apc_ended: bool,
     }
 
     impl Handler for MockHandler {
@@ -2083,6 +2141,15 @@ mod tests {
         fn reset_color(&mut self, index: usize) {
             self.reset_colors.push(index)
         }
+
+        fn apc_put(&mut self, byte: u8) {
+            self.apc.push(byte);
+        }
+
+        fn apc_end(&mut self) -> bool {
+            self.apc_ended = true;
+            true
+        }
     }
 
     impl Default for MockHandler {
@@ -2094,8 +2161,23 @@ mod tests {
                 identity_reported: false,
                 color: None,
                 reset_colors: Vec::new(),
+                apc: Vec::new(),
+                apc_ended: false,
             }
         }
+    }
+
+    #[test]
+    fn apc_can_request_ordered_barrier() {
+        let bytes = b"\x1b_Gi=1;AAAA\x1b\\after";
+        let mut parser = Processor::<TestSyncHandler>::new();
+        let mut handler = MockHandler::default();
+
+        let consumed = parser.advance_until_terminated(&mut handler, bytes);
+
+        assert_eq!(handler.apc, b"Gi=1;AAAA");
+        assert!(handler.apc_ended);
+        assert_eq!(&bytes[consumed..], b"\\after");
     }
 
     #[test]

@@ -10,7 +10,7 @@ Implement the complete Kitty terminal graphics protocol described by the accepte
 
 - Base revision is `7dd7b5b0` on `aasoft/kitty`.
 - The workspace now carries a local `vte` 0.15.0 fork. APC has its own streaming callback state; PM and SOS remain ignored.
-- `alacritty_terminal/src/event_loop.rs` advances a full PTY buffer while holding `Term`'s mutex.
+- `alacritty_terminal` now parses bounded Kitty APC control and payload data into typed commands. `vte::ansi::Processor` can stop after a handler-requested APC barrier, but the PTY loop does not yet retain and resume the unconsumed suffix.
 - Primary grid width changes reflow cells in `alacritty_terminal/src/grid/resize.rs`; no external points participate.
 - Terminal renderable state is collected under lock, while OpenGL work occurs after lock release.
 - No graphics state, graphics configuration, image renderer, or local graphics transport exists.
