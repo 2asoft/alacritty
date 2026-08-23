@@ -16,11 +16,11 @@ The protocol defines required behavior. External tests identify scenarios and ex
 | --- | --- | --- |
 | Transport | Direct RGB, RGBA, PNG, and zlib decode | Covered |
 | Transport | Chunk assembly and cancellation by delete | Covered |
-| Transport | Short direct, file, and shared-memory data return `ENODATA` with request identity | Gap |
-| Transport | Non-regular files return `EBADF` without blocking | Gap |
+| Transport | Short direct, file, and shared-memory data return `ENODATA` with request identity | Covered |
+| Transport | Non-regular files return `EBADF` without blocking | Covered |
 | Parser | `f=0`, unknown formats, and out-of-range flag semantics match Kitty | Covered |
 | Parser | Quiet levels suppress success and error responses | Covered |
-| Identity | Number-based transmission allocates and reuses the smallest free client ID | Gap |
+| Identity | Number-based transmission allocates and reuses the smallest free client ID | Covered |
 | Replacement | First replacement chunk removes old placements and data | Gap |
 | Placement | Native spans and cursor movement include pixel offsets | Covered |
 | Placement | Cell offsets clamp to cell bounds | Covered |

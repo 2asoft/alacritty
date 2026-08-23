@@ -95,7 +95,6 @@ pub struct GraphicsState {
     used_bytes: usize,
     frame_count: usize,
     storage_limit: usize,
-    next_image_id: u32,
     serial: u64,
 }
 
@@ -108,7 +107,6 @@ impl GraphicsState {
             placements: Default::default(),
             used_bytes: 0,
             frame_count: 0,
-            next_image_id: 1,
             serial: 0,
         }
     }
@@ -925,15 +923,11 @@ impl GraphicsState {
         Ok(StoreOutcome { handle, image_id: external_id, image_number: command.image_number })
     }
 
-    fn allocate_image_id(&mut self) -> Result<NonZeroU32, GraphicsError> {
-        for _ in 0..u32::MAX {
-            let candidate = NonZeroU32::new(self.next_image_id).ok_or(GraphicsError::TooLarge)?;
-            self.next_image_id = self.next_image_id.checked_add(1).unwrap_or(1);
-            if !self.image_ids.contains_key(&candidate) {
-                return Ok(candidate);
-            }
-        }
-        Err(GraphicsError::NoSpace)
+    fn allocate_image_id(&self) -> Result<NonZeroU32, GraphicsError> {
+        (1..=u32::MAX)
+            .filter_map(NonZeroU32::new)
+            .find(|candidate| !self.image_ids.contains_key(candidate))
+            .ok_or(GraphicsError::NoSpace)
     }
 
     fn evict_until(&mut self, incoming: usize) {
@@ -1516,8 +1510,23 @@ mod tests {
         let first = state.store(&command, pixels(1, 4)).unwrap();
         let second = state.store(&command, pixels(2, 4)).unwrap();
 
-        assert_ne!(first.image_id, second.image_id);
+        assert_eq!(first.image_id, NonZeroU32::new(1));
+        assert_eq!(second.image_id, NonZeroU32::new(2));
         assert_eq!(state.newest_by_number(9).unwrap().pixels().bytes(), &[2; 4]);
+
+        state
+            .delete(
+                &Command {
+                    delete: Some(crate::graphics::DeleteTarget(b'I')),
+                    image_id: first.image_id.map(NonZeroU32::get),
+                    ..Default::default()
+                },
+                Point::default(),
+                Line(0)..Line(1),
+            )
+            .unwrap();
+        let reused = state.store(&command, pixels(3, 4)).unwrap();
+        assert_eq!(reused.image_id, first.image_id);
     }
 
     #[test]

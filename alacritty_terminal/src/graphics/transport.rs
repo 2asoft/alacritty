@@ -75,17 +75,17 @@ fn read_regular_range(
 ) -> Result<Vec<u8>, GraphicsError> {
     let metadata = file.metadata().map_err(|_| GraphicsError::Io)?;
     if !metadata.file_type().is_file() {
-        return Err(GraphicsError::Invalid);
+        return Err(GraphicsError::BadFile);
     }
 
     let offset = u64::from(command.data_offset.unwrap_or(0));
-    let available = metadata.len().checked_sub(offset).ok_or(GraphicsError::Invalid)?;
+    let available = metadata.len().checked_sub(offset).ok_or(GraphicsError::NoData)?;
     let requested = match command.data_size.unwrap_or(0) {
         0 => available,
         size => u64::from(size),
     };
     if requested > available {
-        return Err(GraphicsError::Invalid);
+        return Err(GraphicsError::NoData);
     }
     let requested = usize::try_from(requested).map_err(|_| GraphicsError::TooLarge)?;
     if requested > limit {
@@ -94,7 +94,7 @@ fn read_regular_range(
 
     file.seek(SeekFrom::Start(offset)).map_err(|_| GraphicsError::Io)?;
     let mut data = vec![0; requested];
-    file.read_exact(&mut data).map_err(|_| GraphicsError::Io)?;
+    file.read_exact(&mut data).map_err(|_| GraphicsError::NoData)?;
     Ok(data)
 }
 
@@ -290,7 +290,7 @@ mod tests {
         assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
         assert_eq!(
             load_transport(Transmission::File, &command(&fifo), 4),
-            Err(GraphicsError::Invalid)
+            Err(GraphicsError::BadFile)
         );
     }
 }

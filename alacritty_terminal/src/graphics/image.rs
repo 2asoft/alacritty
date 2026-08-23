@@ -176,7 +176,10 @@ fn decode_rgb(
     let (width, height) = dimensions(command)?;
     let source_size = raw_size(command, 3)?;
     let canonical_size = raw_size(command, 4)?;
-    if source.len() != source_size {
+    if source.len() < source_size {
+        return Err(GraphicsError::NoData);
+    }
+    if source.len() > source_size {
         return Err(GraphicsError::Invalid);
     }
     if canonical_size > storage_limit {
@@ -198,7 +201,10 @@ fn decode_rgba(
 ) -> Result<PixelBuffer, GraphicsError> {
     let (width, height) = dimensions(command)?;
     let canonical_size = raw_size(command, 4)?;
-    if source.len() != canonical_size {
+    if source.len() < canonical_size {
+        return Err(GraphicsError::NoData);
+    }
+    if source.len() > canonical_size {
         return Err(GraphicsError::Invalid);
     }
     if canonical_size > storage_limit {
@@ -330,7 +336,11 @@ mod tests {
 
     #[test]
     fn rejects_wrong_raw_size_and_quota_overflow() {
-        assert_eq!(decoded(direct(Format::Rgb, 1, 1, &[1, 2]), 4), Err(GraphicsError::Invalid));
+        assert_eq!(decoded(direct(Format::Rgb, 1, 1, &[1, 2]), 4), Err(GraphicsError::NoData));
+        assert_eq!(
+            decoded(direct(Format::Rgb, 1, 1, &[1, 2, 3, 4]), 4),
+            Err(GraphicsError::Invalid)
+        );
         assert_eq!(
             decoded(direct(Format::Rgba, 1, 1, &[1, 2, 3, 4]), 3),
             Err(GraphicsError::NoSpace)
