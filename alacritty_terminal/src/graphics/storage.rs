@@ -146,19 +146,14 @@ impl GraphicsState {
                     columns: placement.columns,
                     rows: placement.rows,
                     z_index: placement.z_index,
+                    image_id: image.external_id.map_or(0, NonZeroU32::get),
                     content_generation: image.content_generation,
                     creation_serial: placement.creation_serial,
                 })
             })
             .collect();
-        renderables.sort_by_key(|graphic| {
-            let image_id = self
-                .images
-                .get(&graphic.image)
-                .and_then(|image| image.external_id)
-                .map_or(0, NonZeroU32::get);
-            (graphic.z_index, image_id, graphic.creation_serial)
-        });
+        renderables
+            .sort_by_key(|graphic| (graphic.z_index, graphic.image_id, graphic.creation_serial));
         renderables
     }
 
@@ -193,6 +188,7 @@ impl GraphicsState {
             columns: placement.columns,
             rows: placement.rows,
             z_index: placement.z_index,
+            image_id: image.external_id.map_or(0, NonZeroU32::get),
             content_generation: image.content_generation,
             creation_serial: placement.creation_serial,
         })

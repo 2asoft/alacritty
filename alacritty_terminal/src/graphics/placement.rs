@@ -66,6 +66,7 @@ pub struct RenderableGraphic {
     pub columns: Option<u32>,
     pub rows: Option<u32>,
     pub z_index: i32,
+    pub image_id: u32,
     pub content_generation: u64,
     pub creation_serial: u64,
 }

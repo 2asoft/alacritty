@@ -907,6 +907,9 @@ impl Display {
                     source_y,
                     source_width,
                     source_height,
+                    z_index: graphic.z_index,
+                    image_id: graphic.image_id,
+                    creation_serial: graphic.creation_serial,
                 })
             })
             .collect();
@@ -968,9 +971,14 @@ impl Display {
                     source_y: crop_y + tile_top,
                     source_width: tile_right - tile_left,
                     source_height: tile_bottom - tile_top,
+                    z_index: prototype.z_index,
+                    image_id: prototype.image_id,
+                    creation_serial: prototype.creation_serial,
                 });
             }
         }
+
+        graphics.sort_by_key(|image| (image.z_index, image.image_id, image.creation_serial));
 
         let cursor_point = terminal.grid().cursor.point;
         let total_lines = terminal.grid().total_lines();
@@ -1015,6 +1023,9 @@ impl Display {
         self.make_current();
 
         self.renderer.clear(background_color, config.window_opacity());
+        let very_negative_end = graphics.partition_point(|image| image.z_index < i32::MIN / 2);
+        let negative_end = graphics.partition_point(|image| image.z_index < 0);
+        self.renderer.draw_images(&size_info, &graphics[..very_negative_end]);
         let mut lines = RenderLines::new();
 
         // Optimize loop hint comparator.
@@ -1034,7 +1045,21 @@ impl Display {
             let vi_highlighted_hint = &self.vi_highlighted_hint;
             let damage_tracker = &mut self.damage_tracker;
 
+            if !graphics.is_empty() {
+                let backgrounds = grid_cells.iter().cloned().map(|mut cell| {
+                    cell.character = ' ';
+                    cell.flags = Flags::empty();
+                    cell.extra = None;
+                    cell
+                });
+                self.renderer.draw_cells(&size_info, glyph_cache, backgrounds);
+                self.renderer.draw_images(&size_info, &graphics[very_negative_end..negative_end]);
+            }
+
             let cells = grid_cells.into_iter().map(|mut cell| {
+                if !graphics.is_empty() {
+                    cell.bg_alpha = 0.;
+                }
                 // Underline hints hovered by mouse or vi mode cursor.
                 if has_highlighted_hint {
                     let point = term::viewport_to_point(display_offset, cell.point);
@@ -1057,9 +1082,10 @@ impl Display {
             self.renderer.draw_cells(&size_info, glyph_cache, cells);
         }
 
-        self.renderer.draw_images(&size_info, &graphics);
+        self.renderer.draw_rects(&size_info, &metrics, lines.rects(&metrics, &size_info));
+        self.renderer.draw_images(&size_info, &graphics[negative_end..]);
 
-        let mut rects = lines.rects(&metrics, &size_info);
+        let mut rects = Vec::new();
 
         if let Some(vi_cursor_point) = vi_cursor_point {
             // Indicate vi mode by showing the cursor's position in the top right corner.

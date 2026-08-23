@@ -24,6 +24,9 @@ pub struct RenderableImage {
     pub source_y: u32,
     pub source_width: u32,
     pub source_height: u32,
+    pub z_index: i32,
+    pub image_id: u32,
+    pub creation_serial: u64,
 }
 
 #[repr(C)]
