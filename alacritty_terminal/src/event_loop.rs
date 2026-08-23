@@ -15,7 +15,7 @@ use log::error;
 use polling::{Event as PollingEvent, Events, PollMode, Poller};
 
 use crate::event::{self, Event, EventListener, WindowSize};
-use crate::graphics::process_command;
+use crate::graphics::process_request;
 use crate::sync::FairMutex;
 use crate::term::Term;
 use crate::{thread, tty};
@@ -155,17 +155,17 @@ where
             // Stop at graphics command barriers and retain the unconsumed suffix.
             let consumed =
                 state.parser.advance_until_terminated(&mut **terminal_guard, &buf[..unprocessed]);
-            let command = terminal_guard.take_graphics_command();
+            let request = terminal_guard.take_graphics_request();
             let graphics_options = terminal_guard.graphics_processing_options();
             processed += consumed;
             buf.copy_within(consumed..unprocessed, 0);
             unprocessed -= consumed;
             recorded = unprocessed;
 
-            if let Some(command) = command {
+            if let Some(request) = request {
                 // Heavy payload processing must not hold the terminal mutex.
                 terminal = None;
-                let command = process_command(command, graphics_options.0, graphics_options.1);
+                let command = process_request(request, graphics_options.0, graphics_options.1);
                 self.terminal.lock_unfair().commit_graphics_command(command);
             }
 

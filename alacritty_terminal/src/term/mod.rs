@@ -16,7 +16,7 @@ use unicode_width::UnicodeWidthChar;
 use crate::event::{Event, EventListener};
 use crate::graphics::{
     Action as GraphicsAction, Command as GraphicsCommand, GraphicsApcParser, GraphicsError,
-    GraphicsState, ProcessedCommand,
+    GraphicsRequest, GraphicsState, PendingResult, PendingTransmission, ProcessedCommand,
 };
 use crate::grid::{Dimensions, Grid, GridIterator, Scroll};
 use crate::index::{self, Boundary, Column, Direction, Line, Point, Side};
@@ -338,6 +338,9 @@ pub struct Term<T> {
     /// Completed command waiting at the ordered PTY parser barrier.
     graphics_command: Option<Result<GraphicsCommand, GraphicsError>>,
 
+    /// Incomplete direct chunk transmission.
+    pending_graphics_transmission: Option<PendingTransmission>,
+
     /// Graphics state paired with the active grid.
     graphics: GraphicsState,
 
@@ -483,6 +486,7 @@ impl<T> Term<T> {
             mode: Default::default(),
             graphics_parser: Default::default(),
             graphics_command: None,
+            pending_graphics_transmission: None,
             graphics: GraphicsState::new(graphics_storage_limit),
             inactive_graphics: GraphicsState::new(graphics_storage_limit),
         }
@@ -570,6 +574,7 @@ impl<T> Term<T> {
         if old_config.graphics.enabled && !self.config.graphics.enabled {
             self.graphics_parser.abort();
             self.graphics_command = None;
+            self.pending_graphics_transmission = None;
             self.graphics.clear();
             self.inactive_graphics.clear();
         }
@@ -697,6 +702,43 @@ impl<T> Term<T> {
     /// Take the graphics command at the current ordered parser barrier.
     pub fn take_graphics_command(&mut self) -> Option<Result<GraphicsCommand, GraphicsError>> {
         self.graphics_command.take()
+    }
+
+    /// Take or assemble the graphics request at the current ordered parser barrier.
+    pub fn take_graphics_request(&mut self) -> Option<GraphicsRequest> {
+        let command = match self.graphics_command.take()? {
+            Ok(command) => command,
+            Err(error) => return Some(GraphicsRequest::Command(Err(error))),
+        };
+        let encoded_limit = self
+            .config
+            .graphics
+            .storage_limit
+            .checked_mul(4)
+            .and_then(|limit| limit.checked_div(3))
+            .and_then(|limit| limit.checked_add(4))
+            .unwrap_or(usize::MAX);
+
+        if let Some(pending) = self.pending_graphics_transmission.take() {
+            return match pending.push(command, encoded_limit) {
+                Ok(PendingResult::Pending(pending)) => {
+                    self.pending_graphics_transmission = Some(pending);
+                    None
+                },
+                Ok(PendingResult::Complete(request)) => Some(request),
+                Err(error) => Some(GraphicsRequest::Command(Err(error))),
+            };
+        }
+
+        if command.more == Some(true) {
+            match PendingTransmission::start(command, encoded_limit) {
+                Ok(pending) => self.pending_graphics_transmission = Some(pending),
+                Err(error) => return Some(GraphicsRequest::Command(Err(error))),
+            }
+            None
+        } else {
+            Some(GraphicsRequest::Command(Ok(command)))
+        }
     }
 
     /// Options required to process a deferred graphics command outside the terminal lock.
@@ -2020,6 +2062,7 @@ impl<T: EventListener> Handler for Term<T> {
         self.inactive_graphics.clear();
         self.graphics_parser.abort();
         self.graphics_command = None;
+        self.pending_graphics_transmission = None;
 
         // Preserve vi mode across resets.
         self.mode &= TermMode::VI;
@@ -2726,6 +2769,31 @@ mod tests {
         let responses = responses.lock().unwrap();
         assert_eq!(responses[0], "\x1b_Gi=31;OK\x1b\\");
         assert!(responses[1].starts_with("\x1b[?"));
+    }
+
+    #[test]
+    fn kitty_chunked_transfer_commits_after_final_chunk() {
+        let size = TermSize::new(5, 10);
+        let config = Config {
+            graphics: GraphicsConfig { enabled: true, ..Default::default() },
+            ..Default::default()
+        };
+        let mut term = Term::new(config, &size, VoidListener);
+        let mut parser = ansi::Processor::<ansi::StdSyncHandler>::new();
+        let input = b"\x1b_Gf=32,s=1,v=1,i=9,m=1;AQID\x1b\\\x1b_Gm=0;BA==\x1b\\";
+
+        let first = parser.advance_until_terminated(&mut term, input);
+        assert!(term.take_graphics_request().is_none());
+        let second = parser.advance_until_terminated(&mut term, &input[first..]);
+        let request = term.take_graphics_request().unwrap();
+        let options = term.graphics_processing_options();
+        term.commit_graphics_command(crate::graphics::process_request(
+            request, options.0, options.1,
+        ));
+
+        assert_eq!(first + second, input.len() - 1);
+        let image = term.graphics().image_by_id(std::num::NonZeroU32::new(9).unwrap()).unwrap();
+        assert_eq!(image.pixels().bytes(), &[1, 2, 3, 4]);
     }
 
     #[test]
