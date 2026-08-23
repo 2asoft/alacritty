@@ -75,7 +75,7 @@ pub struct StoreOutcome {
     pub image_number: Option<u32>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct GraphicsState {
     images: HashMap<ImageHandle, Image>,
     image_ids: HashMap<NonZeroU32, ImageHandle>,
@@ -634,7 +634,31 @@ impl GraphicsState {
         self.evict_until(0);
     }
 
+    pub fn store_and_place(
+        &mut self,
+        command: &Command,
+        pixels: PixelBuffer,
+        anchor: Point,
+    ) -> Result<StoreOutcome, GraphicsError> {
+        let mut transaction = self.clone();
+        let outcome = transaction.store_inner(command, pixels)?;
+        transaction.place_handle(outcome.handle, command, anchor)?;
+        *self = transaction;
+        Ok(outcome)
+    }
+
     pub fn store(
+        &mut self,
+        command: &Command,
+        pixels: PixelBuffer,
+    ) -> Result<StoreOutcome, GraphicsError> {
+        let mut transaction = self.clone();
+        let outcome = transaction.store_inner(command, pixels)?;
+        *self = transaction;
+        Ok(outcome)
+    }
+
+    fn store_inner(
         &mut self,
         command: &Command,
         pixels: PixelBuffer,
@@ -668,6 +692,9 @@ impl GraphicsState {
         }
 
         self.evict_until_with_exclusion(required, replaced_bytes, replaced);
+        // Evicting a parent can reclaim the replaced image through its relative placements.
+        let replaced_bytes =
+            replaced.and_then(|handle| self.images.get(&handle)).map_or(0, Image::storage_bytes);
         let target_usage = self
             .used_bytes
             .checked_sub(replaced_bytes)
@@ -770,6 +797,38 @@ mod tests {
 
     fn pixels(value: u8, bytes: usize) -> PixelBuffer {
         PixelBuffer::from_rgba(1, 1, Arc::from(vec![value; bytes]))
+    }
+
+    #[test]
+    fn replacement_accounts_for_parent_eviction_and_preserves_state_on_failure() {
+        let mut state = GraphicsState::new(12);
+        let parent = Command { image_id: Some(1), placement_id: Some(1), ..Default::default() };
+        let child = Command {
+            image_id: Some(2),
+            placement_id: Some(1),
+            parent_image_id: Some(1),
+            parent_placement_id: Some(1),
+            ..Default::default()
+        };
+        state.store(&parent, pixels(1, 4)).unwrap();
+        state.store(&child, pixels(2, 4)).unwrap();
+        state.place(&parent, Point::default()).unwrap();
+        state.place(&child, Point::default()).unwrap();
+        let replacement = Command { image_id: Some(2), ..Default::default() };
+        let large = PixelBuffer::from_rgba(3, 1, Arc::from(vec![3; 12]));
+        let mut exhausted = state.clone();
+        exhausted.serial = u64::MAX;
+        assert_eq!(exhausted.store(&replacement, large.clone()), Err(GraphicsError::TooLarge));
+        assert_eq!(exhausted.images.len(), 2);
+        assert_eq!(exhausted.placements.values().count(), 2);
+        assert_eq!(exhausted.used_bytes, 8);
+        state.store(&replacement, large).unwrap();
+        assert_eq!(state.images.len(), 1);
+        assert_eq!(state.used_bytes, 12);
+        assert_eq!(
+            state.image_by_id(NonZeroU32::new(2).unwrap()).unwrap().pixels().bytes(),
+            &[3; 12]
+        );
     }
 
     #[test]
@@ -918,6 +977,32 @@ mod tests {
             state.image_by_id(NonZeroU32::new(1).unwrap()).unwrap().pixels().bytes(),
             &[2; 4]
         );
+    }
+
+    #[test]
+    fn failed_transmit_and_place_preserves_replaced_image_and_placements() {
+        let mut state = GraphicsState::new(8);
+        let old = Command { image_id: Some(1), placement_id: Some(1), ..Default::default() };
+        state.store(&old, pixels(1, 4)).unwrap();
+        state.place(&old, Point::default()).unwrap();
+        let replacement = Command {
+            action: Some(Action::TransmitAndPlace),
+            image_id: Some(1),
+            placement_id: Some(2),
+            parent_image_id: Some(9),
+            parent_placement_id: Some(9),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            state.store_and_place(&replacement, pixels(2, 4), Point::default()),
+            Err(GraphicsError::NoParent)
+        );
+        assert_eq!(
+            state.image_by_id(NonZeroU32::new(1).unwrap()).unwrap().pixels().bytes(),
+            &[1; 4]
+        );
+        assert_eq!(state.placements().count(), 1);
     }
 
     #[test]

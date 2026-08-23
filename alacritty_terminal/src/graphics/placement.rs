@@ -93,7 +93,7 @@ impl Placement {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct Placements {
     entries: HashMap<PlacementHandle, Placement>,
     named: HashMap<(NonZeroU32, NonZeroU32), PlacementHandle>,

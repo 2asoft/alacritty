@@ -765,13 +765,13 @@ impl<T> Term<T> {
                 self.graphics_response(&command, result);
             },
             ProcessedCommand::Decoded { command, image } => {
-                let result = self.graphics.store(&command, image).and_then(|outcome| {
-                    if command.action == Some(GraphicsAction::TransmitAndPlace) {
-                        let anchor = command.anchor.unwrap_or(self.grid.cursor.point);
-                        self.graphics.place_handle(outcome.handle, &command, anchor)?;
-                    }
-                    Ok(outcome.image_id)
-                });
+                let result = if command.action == Some(GraphicsAction::TransmitAndPlace) {
+                    let anchor = command.anchor.unwrap_or(self.grid.cursor.point);
+                    self.graphics.store_and_place(&command, image, anchor)
+                } else {
+                    self.graphics.store(&command, image)
+                }
+                .map(|outcome| outcome.image_id);
                 if result.is_ok() && command.action == Some(GraphicsAction::TransmitAndPlace) {
                     self.advance_graphics_cursor(&command);
                 }
