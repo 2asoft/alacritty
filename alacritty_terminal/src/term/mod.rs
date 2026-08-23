@@ -763,6 +763,9 @@ impl<T> Term<T> {
                     }
                     Ok(outcome.image_id)
                 });
+                if result.is_ok() && command.action == Some(GraphicsAction::TransmitAndPlace) {
+                    self.advance_graphics_cursor(&command);
+                }
                 self.graphics_response(&command, result);
             },
             ProcessedCommand::Metadata(command) => {
@@ -778,6 +781,9 @@ impl<T> Term<T> {
                         .graphics
                         .place(&command, command.anchor.unwrap_or(self.grid.cursor.point))
                         .map(|_| std::num::NonZeroU32::new(command.image_id.unwrap_or(0)));
+                    if result.is_ok() {
+                        self.advance_graphics_cursor(&command);
+                    }
                     self.graphics_response(&command, result);
                 } else if command.more != Some(true) {
                     self.graphics_response(&command, Err(GraphicsError::Unsupported));
@@ -789,6 +795,23 @@ impl<T> Term<T> {
             ProcessedCommand::Error { command: None, .. } => (),
         }
         self.mark_fully_damaged();
+    }
+
+    fn advance_graphics_cursor(&mut self, command: &GraphicsCommand)
+    where
+        T: EventListener,
+    {
+        if command.cursor_policy == Some(1)
+            || command.unicode_placeholder == Some(1)
+            || command.parent_image_id.unwrap_or(0) != 0
+            || command.parent_placement_id.unwrap_or(0) != 0
+        {
+            return;
+        }
+        let columns = usize::try_from(command.columns.unwrap_or(0)).unwrap_or(usize::MAX);
+        let rows = usize::try_from(command.rows.unwrap_or(0)).unwrap_or(usize::MAX);
+        self.move_forward(columns);
+        self.move_down(rows);
     }
 
     /// Graphics state paired with the active grid.
@@ -2782,6 +2805,31 @@ mod tests {
         let responses = responses.lock().unwrap();
         assert_eq!(responses[0], "\x1b_Gi=31;OK\x1b\\");
         assert!(responses[1].starts_with("\x1b[?"));
+    }
+
+    #[test]
+    fn kitty_placement_cursor_policy_moves_only_absolute_classic_placements() {
+        let size = TermSize::new(10, 10);
+        let mut term = Term::new(Config::default(), &size, VoidListener);
+        term.grid.cursor.point = Point::new(Line(1), Column(1));
+        let placement = GraphicsCommand { columns: Some(3), rows: Some(2), ..Default::default() };
+
+        term.advance_graphics_cursor(&placement);
+        assert_eq!(term.grid.cursor.point, Point::new(Line(3), Column(4)));
+
+        for command in [
+            GraphicsCommand { cursor_policy: Some(1), ..placement.clone() },
+            GraphicsCommand { unicode_placeholder: Some(1), ..placement.clone() },
+            GraphicsCommand {
+                parent_image_id: Some(1),
+                parent_placement_id: Some(1),
+                ..placement.clone()
+            },
+        ] {
+            term.grid.cursor.point = Point::new(Line(1), Column(1));
+            term.advance_graphics_cursor(&command);
+            assert_eq!(term.grid.cursor.point, Point::new(Line(1), Column(1)));
+        }
     }
 
     #[test]
