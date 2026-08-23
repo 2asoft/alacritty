@@ -2,6 +2,7 @@
 //! GPU drawing.
 
 use std::cmp;
+use std::collections::HashMap;
 use std::fmt::{self, Formatter};
 use std::mem::{self, ManuallyDrop};
 use std::num::NonZeroU32;
@@ -818,12 +819,39 @@ impl Display {
         let cursor = content.cursor();
 
         let size_info = self.size_info;
+        let mut virtual_origins = HashMap::<(u32, u32), Point>::new();
+        for line in terminal.grid().topmost_line().0..size_info.screen_lines() as i32 {
+            let mut previous = None;
+            for column in 0..size_info.columns() {
+                let point = Point::new(Line(line), Column(column));
+                let cell = &terminal.grid()[point];
+                let Some(placeholder) = decode_placeholder(cell, previous) else {
+                    previous = None;
+                    continue;
+                };
+                previous = Some(placeholder);
+                if placeholder.placement_id == 0 {
+                    continue;
+                }
+                virtual_origins
+                    .entry((placeholder.image_id, placeholder.placement_id))
+                    .and_modify(|origin| {
+                        origin.line = origin.line.min(point.line);
+                        origin.column = origin.column.min(point.column);
+                    })
+                    .or_insert(point);
+            }
+        }
         let mut graphics: Vec<_> = terminal
             .graphics()
-            .renderables()
+            .renderables_with_virtual_origins(|image_id, placement_id| {
+                virtual_origins.get(&(image_id, placement_id)).copied()
+            })
             .into_iter()
             .filter_map(|graphic| {
-                let point = term::point_to_viewport(display_offset, graphic.anchor)?;
+                let viewport_line =
+                    term::point_to_viewport(display_offset, Point::new(graphic.line, Column(0)))?
+                        .line;
                 let image_width = graphic.pixels.width();
                 let image_height = graphic.pixels.height();
                 let source_x = graphic.source_x.min(image_width);
@@ -853,10 +881,10 @@ impl Display {
                     content_generation: graphic.content_generation,
                     pixels: graphic.pixels,
                     x: size_info.padding_x()
-                        + point.column.0 as f32 * cell_width
+                        + graphic.column as f32 * cell_width
                         + graphic.x_offset as f32,
                     y: size_info.padding_y()
-                        + point.line as f32 * cell_height
+                        + viewport_line as f32 * cell_height
                         + graphic.y_offset as f32,
                     width,
                     height,

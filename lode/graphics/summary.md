@@ -11,7 +11,7 @@ Kitty graphics support spans generic APC recognition, terminal protocol and imag
 3. Each primary and alternate screen owns separate graphics state.
 4. The PTY loop executes costly transport/decode work outside `Term`'s mutex and commits in input order.
 5. Display code snapshots immutable pixel handles and resolved placement geometry while locked.
-6. The renderer uploads disposable textures and composites them in protocol z layers after releasing the lock.
+6. The renderer uploads disposable textures and draws them after releasing the lock. Full protocol z-layer composition remains pending.
 
 ## Configuration
 
@@ -37,7 +37,7 @@ Malformed, unsupported, oversized, exhausted, or inaccessible operations produce
 
 - `vte/src/lib.rs` - generic streaming APC recognition and cancellation callbacks.
 - `alacritty_terminal/src/event_loop.rs` - retained input suffix, unlocked decode, and ordered commit boundary.
-- `alacritty_terminal/src/graphics/` - typed commands, bounded canonical decoding, per-screen image storage, and Unicode placeholder decoding.
+- `alacritty_terminal/src/graphics/` - typed commands, bounded canonical decoding, per-screen image storage, relative placement graphs, and Unicode placeholder decoding.
 - `scripts/generate-kitty-diacritics.py` - authoritative placeholder row/column table regeneration.
 - `alacritty_terminal/src/term/mod.rs` - screen state, reset, resize, and render snapshot boundary.
 - `alacritty_terminal/src/grid/resize.rs` - primary-buffer reflow implementation.

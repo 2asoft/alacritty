@@ -4,8 +4,8 @@ use std::num::NonZeroU32;
 use crate::index::{Line, Point};
 
 use super::{
-    Action, Command, GraphicsError, PixelBuffer, Placement, PlacementHandle, Placements,
-    RenderableGraphic,
+    Action, Command, GraphicsError, PixelBuffer, Placement, PlacementHandle, PlacementInsert,
+    Placements, RenderableGraphic,
 };
 
 pub const MAX_IMAGES_PER_BUFFER: usize = 4096;
@@ -95,16 +95,25 @@ impl GraphicsState {
     }
 
     pub fn renderables(&self) -> Vec<RenderableGraphic> {
+        self.renderables_with_virtual_origins(|_, _| None)
+    }
+
+    pub fn renderables_with_virtual_origins(
+        &self,
+        virtual_origin: impl Fn(u32, u32) -> Option<Point>,
+    ) -> Vec<RenderableGraphic> {
         let mut renderables: Vec<_> = self
             .placements
             .values()
             .filter(|placement| !placement.virtual_placement)
             .filter_map(|placement| {
                 let image = self.images.get(&placement.image)?;
+                let location = self.placements.resolved_anchor(placement, &virtual_origin)?;
                 Some(RenderableGraphic {
                     image: image.handle,
                     pixels: image.pixels.clone(),
-                    anchor: placement.anchor,
+                    line: location.line,
+                    column: location.column,
                     source_x: placement.source_x,
                     source_y: placement.source_y,
                     source_width: placement.source_width,
@@ -150,7 +159,8 @@ impl GraphicsState {
         Some(RenderableGraphic {
             image: image.handle,
             pixels: image.pixels.clone(),
-            anchor: placement.anchor,
+            line: placement.anchor.line,
+            column: i32::try_from(placement.anchor.column.0).ok()?,
             source_x: placement.source_x,
             source_y: placement.source_y,
             source_width: placement.source_width,
@@ -166,11 +176,13 @@ impl GraphicsState {
     }
 
     pub fn scroll_up(&mut self, region: &std::ops::Range<Line>, lines: usize, history_size: usize) {
-        self.placements.scroll_up(region, lines, history_size);
+        let relative_images = self.placements.scroll_up(region, lines, history_size);
+        self.remove_orphaned_relative_images(relative_images);
     }
 
     pub fn scroll_down(&mut self, region: &std::ops::Range<Line>, lines: usize) {
-        self.placements.scroll_down(region, lines);
+        let relative_images = self.placements.scroll_down(region, lines);
+        self.remove_orphaned_relative_images(relative_images);
     }
 
     pub fn delete(
@@ -197,42 +209,50 @@ impl GraphicsState {
             return Ok(());
         }
 
-        let cell = || {
-            let x = command.x.unwrap_or(1).saturating_sub(1) as usize;
-            let y = i64::from(command.y.unwrap_or(1).saturating_sub(1));
-            (x, y)
-        };
-        let affected = self.placements.remove_matching(|placement| {
-            let columns = placement.columns.unwrap_or(1) as usize;
+        let resolved_anchors: HashMap<_, _> = self
+            .placements
+            .values()
+            .filter_map(|placement| {
+                self.placements
+                    .resolved_anchor(placement, &|_, _| None)
+                    .map(|location| (placement.handle, location))
+            })
+            .collect();
+        let cell = (
+            i64::from(command.x.unwrap_or(1).saturating_sub(1)),
+            i64::from(command.y.unwrap_or(1).saturating_sub(1)),
+        );
+        let (affected, relative_images) = self.placements.remove_matching(|placement| {
+            if placement.virtual_placement && !matches!(selector, b'i' | b'n' | b'r') {
+                return false;
+            }
+            let columns = i64::from(placement.columns.unwrap_or(1));
             let rows = i64::from(placement.rows.unwrap_or(1));
-            let top = i64::from(placement.anchor.line.0);
-            let intersects = |(column, line): (usize, i64)| {
-                line >= top
-                    && line < top + rows
-                    && column >= placement.anchor.column.0
-                    && column < placement.anchor.column.0.saturating_add(columns)
+            let location = resolved_anchors.get(&placement.handle).copied().unwrap_or_else(|| {
+                super::placement::ResolvedPlacement {
+                    line: placement.anchor.line,
+                    column: i32::try_from(placement.anchor.column.0).unwrap_or(i32::MAX),
+                }
+            });
+            let top = i64::from(location.line.0);
+            let left = i64::from(location.column);
+            let intersects = |(column, line): (i64, i64)| {
+                line >= top && line < top + rows && column >= left && column < left + columns
             };
             match selector {
-                b'a' => {
-                    placement.anchor.line >= visible_lines.start
-                        && placement.anchor.line < visible_lines.end
-                },
+                b'a' => location.line >= visible_lines.start && location.line < visible_lines.end,
                 b'i' | b'n' => {
                     Some(placement.image) == explicit_image
                         && placement_id.is_none_or(|id| placement.placement_id == Some(id))
                 },
-                b'c' => intersects((cursor.column.0, i64::from(cursor.line.0))),
-                b'p' => intersects(cell()),
-                b'q' => intersects(cell()) && placement.z_index == command.z_index.unwrap_or(0),
-                b'x' => {
-                    let column = command.x.unwrap_or(1).saturating_sub(1) as usize;
-                    column >= placement.anchor.column.0
-                        && column < placement.anchor.column.0.saturating_add(columns)
-                },
-                b'y' => {
-                    let line = i64::from(command.y.unwrap_or(1).saturating_sub(1));
-                    line >= top && line < top + rows
-                },
+                b'c' => intersects((
+                    i64::try_from(cursor.column.0).unwrap_or(i64::MAX),
+                    i64::from(cursor.line.0),
+                )),
+                b'p' => intersects(cell),
+                b'q' => intersects(cell) && placement.z_index == command.z_index.unwrap_or(0),
+                b'x' => cell.0 >= left && cell.0 < left + columns,
+                b'y' => cell.1 >= top && cell.1 < top + rows,
                 b'z' => placement.z_index == command.z_index.unwrap_or(0),
                 b'r' => placement.image_id.is_some_and(|id| {
                     id.get() >= command.x.unwrap_or(0) && id.get() <= command.y.unwrap_or(u32::MAX)
@@ -240,6 +260,8 @@ impl GraphicsState {
                 _ => false,
             }
         });
+
+        self.remove_orphaned_relative_images(relative_images);
 
         if free_data {
             if let Some(image) = explicit_image {
@@ -282,7 +304,8 @@ impl GraphicsState {
         .ok_or(GraphicsError::NotFound)?;
         let handle = image.handle;
         let image_id = image.external_id;
-        self.placements.insert(handle, image_id, command, anchor)
+        let inserted = self.placements.insert(handle, image_id, command, anchor)?;
+        self.finish_placement_insert(inserted)
     }
 
     pub fn place_handle(
@@ -292,7 +315,24 @@ impl GraphicsState {
         anchor: Point,
     ) -> Result<PlacementHandle, GraphicsError> {
         let image_id = self.images.get(&handle).ok_or(GraphicsError::NotFound)?.external_id;
-        self.placements.insert(handle, image_id, command, anchor)
+        let inserted = self.placements.insert(handle, image_id, command, anchor)?;
+        self.finish_placement_insert(inserted)
+    }
+
+    fn finish_placement_insert(
+        &mut self,
+        inserted: PlacementInsert,
+    ) -> Result<PlacementHandle, GraphicsError> {
+        self.remove_orphaned_relative_images(inserted.orphaned_relative_images);
+        Ok(inserted.handle)
+    }
+
+    fn remove_orphaned_relative_images(&mut self, images: Vec<ImageHandle>) {
+        for image in images {
+            if !self.placements.image_is_placed(image) {
+                self.remove(image);
+            }
+        }
     }
 
     pub fn newest_by_number(&self, number: u32) -> Option<&Image> {
@@ -422,10 +462,15 @@ impl GraphicsState {
 
     fn remove(&mut self, handle: ImageHandle) {
         if let Some(image) = self.images.remove(&handle) {
-            self.placements.remove_image(handle);
+            let relative_images = self.placements.remove_image(handle);
             self.used_bytes -= image.pixels.storage_bytes();
             if let Some(id) = image.external_id {
                 self.image_ids.remove(&id);
+            }
+            for relative_image in relative_images {
+                if !self.placements.image_is_placed(relative_image) {
+                    self.remove(relative_image);
+                }
             }
         }
     }
@@ -464,7 +509,7 @@ mod tests {
     }
 
     #[test]
-    fn deletion_handles_large_row_spans() {
+    fn deletion_handles_large_spans_and_relative_offsets() {
         for rows in [i32::MAX as u32, u32::MAX] {
             let mut state = GraphicsState::new(4);
             let image = Command { image_id: Some(1), rows: Some(rows), ..Default::default() };
@@ -478,6 +523,29 @@ mod tests {
             state.delete(&delete, Point::default(), Line(0)..Line(24)).unwrap();
             assert!(state.placements().next().is_none());
         }
+        let mut state = GraphicsState::new(8);
+        let root = Command { image_id: Some(1), placement_id: Some(1), ..Default::default() };
+        state.store(&root, pixels(1, 4)).unwrap();
+        state.place(&root, Point::default()).unwrap();
+        let child = Command {
+            image_id: Some(2),
+            placement_id: Some(1),
+            parent_image_id: Some(1),
+            parent_placement_id: Some(1),
+            vertical_offset: Some(i32::MAX),
+            columns: Some(1),
+            rows: Some(1),
+            ..Default::default()
+        };
+        state.store(&child, pixels(1, 4)).unwrap();
+        state.place(&child, Point::default()).unwrap();
+        let delete = Command {
+            delete: Some(crate::graphics::DeleteTarget(b'y')),
+            y: Some(i32::MAX as u32 + 1),
+            ..Default::default()
+        };
+        state.delete(&delete, Point::default(), Line(0)..Line(24)).unwrap();
+        assert_eq!(state.placements().count(), 1);
     }
 
     #[test]
@@ -515,6 +583,226 @@ mod tests {
         assert_eq!(state.placements().next().unwrap().anchor().line, Line(-1));
         state.scroll_up(&region, 2, 2);
         assert!(state.placements().next().is_none());
+    }
+
+    #[test]
+    fn relative_placement_requires_parent_and_tracks_its_position() {
+        let mut state = GraphicsState::new(8);
+        let parent = Command { image_id: Some(1), placement_id: Some(1), ..Default::default() };
+        let child_image = Command { image_id: Some(2), ..Default::default() };
+        state.store(&parent, pixels(1, 4)).unwrap();
+        state.store(&child_image, pixels(2, 4)).unwrap();
+
+        let relative = Command {
+            image_id: Some(2),
+            placement_id: Some(1),
+            parent_image_id: Some(1),
+            parent_placement_id: Some(1),
+            horizontal_offset: Some(2),
+            vertical_offset: Some(-1),
+            ..Default::default()
+        };
+        assert_eq!(state.place(&relative, Point::default()), Err(GraphicsError::NoParent));
+
+        state.place(&parent, Point::new(Line(3), crate::index::Column(4))).unwrap();
+        state.place(&relative, Point::default()).unwrap();
+        let child = state
+            .renderables()
+            .into_iter()
+            .find(|renderable| {
+                renderable.image == state.image_by_id(NonZeroU32::new(2).unwrap()).unwrap().handle()
+            })
+            .unwrap();
+        assert_eq!((child.line, child.column), (Line(2), 6));
+
+        state.scroll_up(&(Line(0)..Line(10)), 1, 10);
+        let child = state
+            .renderables()
+            .into_iter()
+            .find(|renderable| {
+                renderable.image == state.image_by_id(NonZeroU32::new(2).unwrap()).unwrap().handle()
+            })
+            .unwrap();
+        assert_eq!((child.line, child.column), (Line(1), 6));
+
+        state
+            .place(
+                &Command { placement_id: Some(2), horizontal_offset: Some(-6), ..relative },
+                Point::default(),
+            )
+            .unwrap();
+        assert!(state.renderables().iter().any(|renderable| renderable.column == -2));
+    }
+
+    #[test]
+    fn location_deletion_does_not_affect_virtual_placements() {
+        let mut state = GraphicsState::new(4);
+        let prototype = Command {
+            image_id: Some(1),
+            placement_id: Some(1),
+            unicode_placeholder: Some(1),
+            ..Default::default()
+        };
+        state.store(&prototype, pixels(1, 4)).unwrap();
+        state.place(&prototype, Point::default()).unwrap();
+        state
+            .delete(
+                &Command {
+                    delete: Some(crate::graphics::DeleteTarget(b'a')),
+                    ..Default::default()
+                },
+                Point::default(),
+                Line(0)..Line(10),
+            )
+            .unwrap();
+        assert_eq!(state.placements().count(), 1);
+    }
+
+    #[test]
+    fn relative_placement_resolves_virtual_parent_from_placeholder_origin() {
+        let mut state = GraphicsState::new(8);
+        let prototype = Command {
+            image_id: Some(1),
+            placement_id: Some(1),
+            unicode_placeholder: Some(1),
+            columns: Some(1),
+            rows: Some(1),
+            ..Default::default()
+        };
+        let child_image = Command { image_id: Some(2), ..Default::default() };
+        state.store(&prototype, pixels(1, 4)).unwrap();
+        state.store(&child_image, pixels(2, 4)).unwrap();
+        state.place(&prototype, Point::default()).unwrap();
+        state
+            .place(
+                &Command {
+                    image_id: Some(2),
+                    placement_id: Some(1),
+                    parent_image_id: Some(1),
+                    parent_placement_id: Some(1),
+                    horizontal_offset: Some(3),
+                    vertical_offset: Some(2),
+                    ..Default::default()
+                },
+                Point::default(),
+            )
+            .unwrap();
+
+        assert!(state.renderables().is_empty());
+        let renderables = state.renderables_with_virtual_origins(|image_id, placement_id| {
+            (image_id == 1 && placement_id == 1)
+                .then_some(Point::new(Line(4), crate::index::Column(5)))
+        });
+        assert_eq!(renderables.len(), 1);
+        assert_eq!((renderables[0].line, renderables[0].column), (Line(6), 8));
+    }
+
+    #[test]
+    fn relative_placement_rejects_excessive_depth_and_cycles() {
+        let mut state = GraphicsState::new(4);
+        let image = Command { image_id: Some(1), ..Default::default() };
+        state.store(&image, pixels(1, 4)).unwrap();
+        state.place(&Command { placement_id: Some(1), ..image.clone() }, Point::default()).unwrap();
+        for placement_id in 2..=9 {
+            state
+                .place(
+                    &Command {
+                        placement_id: Some(placement_id),
+                        parent_image_id: Some(1),
+                        parent_placement_id: Some(placement_id - 1),
+                        ..image.clone()
+                    },
+                    Point::default(),
+                )
+                .unwrap();
+        }
+        assert_eq!(
+            state.place(
+                &Command {
+                    placement_id: Some(10),
+                    parent_image_id: Some(1),
+                    parent_placement_id: Some(9),
+                    ..image.clone()
+                },
+                Point::default(),
+            ),
+            Err(GraphicsError::TooDeep)
+        );
+        assert_eq!(
+            state.place(
+                &Command {
+                    placement_id: Some(1),
+                    parent_image_id: Some(1),
+                    parent_placement_id: Some(9),
+                    ..image
+                },
+                Point::default(),
+            ),
+            Err(GraphicsError::Cycle)
+        );
+    }
+
+    #[test]
+    fn replacing_relative_parent_cascades_and_frees_orphan_child_image() {
+        let mut state = GraphicsState::new(8);
+        let parent = Command { image_id: Some(1), placement_id: Some(1), ..Default::default() };
+        let child = Command { image_id: Some(2), ..Default::default() };
+        state.store(&parent, pixels(1, 4)).unwrap();
+        state.store(&child, pixels(2, 4)).unwrap();
+        state.place(&parent, Point::default()).unwrap();
+        state
+            .place(
+                &Command {
+                    image_id: Some(2),
+                    placement_id: Some(1),
+                    parent_image_id: Some(1),
+                    parent_placement_id: Some(1),
+                    ..Default::default()
+                },
+                Point::default(),
+            )
+            .unwrap();
+
+        state.place(&parent, Point::new(Line(1), crate::index::Column(1))).unwrap();
+        assert_eq!(state.placements().count(), 1);
+        assert!(state.image_by_id(NonZeroU32::new(2).unwrap()).is_none());
+    }
+
+    #[test]
+    fn deleting_relative_parent_cascades_and_frees_orphan_child_image() {
+        let mut state = GraphicsState::new(8);
+        let parent = Command { image_id: Some(1), placement_id: Some(1), ..Default::default() };
+        let child = Command { image_id: Some(2), ..Default::default() };
+        state.store(&parent, pixels(1, 4)).unwrap();
+        state.store(&child, pixels(2, 4)).unwrap();
+        state.place(&parent, Point::default()).unwrap();
+        state
+            .place(
+                &Command {
+                    image_id: Some(2),
+                    placement_id: Some(1),
+                    parent_image_id: Some(1),
+                    parent_placement_id: Some(1),
+                    ..Default::default()
+                },
+                Point::default(),
+            )
+            .unwrap();
+
+        state
+            .delete(
+                &Command {
+                    delete: Some(crate::graphics::DeleteTarget(b'i')),
+                    image_id: Some(1),
+                    placement_id: Some(1),
+                    ..Default::default()
+                },
+                Point::default(),
+                Line(0)..Line(10),
+            )
+            .unwrap();
+        assert!(state.placements().next().is_none());
+        assert!(state.image_by_id(NonZeroU32::new(2).unwrap()).is_none());
     }
 
     #[test]

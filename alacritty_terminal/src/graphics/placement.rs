@@ -6,9 +6,23 @@ use crate::index::{Line, Point};
 use super::{Command, GraphicsError, ImageHandle, PixelBuffer};
 
 pub const MAX_PLACEMENTS_PER_BUFFER: usize = 65_536;
+pub const MAX_RELATIVE_PLACEMENT_DEPTH: usize = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PlacementHandle(pub(crate) u64);
+
+#[derive(Debug)]
+pub(crate) struct PlacementInsert {
+    pub handle: PlacementHandle,
+    pub orphaned_relative_images: Vec<ImageHandle>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RelativePlacement {
+    pub parent: PlacementHandle,
+    pub horizontal_cells: i32,
+    pub vertical_cells: i32,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Placement {
@@ -27,14 +41,22 @@ pub struct Placement {
     pub(crate) rows: Option<u32>,
     pub(crate) z_index: i32,
     pub(crate) virtual_placement: bool,
+    pub(crate) relative: Option<RelativePlacement>,
     pub(crate) creation_serial: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ResolvedPlacement {
+    pub line: Line,
+    pub column: i32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RenderableGraphic {
     pub image: ImageHandle,
     pub pixels: PixelBuffer,
-    pub anchor: Point,
+    pub line: Line,
+    pub column: i32,
     pub source_x: u32,
     pub source_y: u32,
     pub source_width: Option<u32>,
@@ -88,7 +110,41 @@ impl Placements {
         self.named.clear();
     }
 
-    pub fn scroll_up(&mut self, region: &std::ops::Range<Line>, lines: usize, history_size: usize) {
+    pub fn resolved_anchor(
+        &self,
+        placement: &Placement,
+        virtual_origin: &impl Fn(u32, u32) -> Option<Point>,
+    ) -> Option<ResolvedPlacement> {
+        let mut root = placement;
+        let mut horizontal_cells = 0i32;
+        let mut vertical_cells = 0i32;
+        let mut depth = 0;
+        while let Some(location) = root.relative {
+            depth += 1;
+            if depth > MAX_RELATIVE_PLACEMENT_DEPTH {
+                return None;
+            }
+            horizontal_cells = horizontal_cells.checked_add(location.horizontal_cells)?;
+            vertical_cells = vertical_cells.checked_add(location.vertical_cells)?;
+            root = self.entries.get(&location.parent)?;
+        }
+        let root_anchor = if root.virtual_placement {
+            virtual_origin(root.image_id?.get(), root.placement_id?.get())?
+        } else {
+            root.anchor
+        };
+        Some(ResolvedPlacement {
+            line: Line(root_anchor.line.0.checked_add(vertical_cells)?),
+            column: i32::try_from(root_anchor.column.0).ok()?.checked_add(horizontal_cells)?,
+        })
+    }
+
+    pub fn scroll_up(
+        &mut self,
+        region: &std::ops::Range<Line>,
+        lines: usize,
+        history_size: usize,
+    ) -> Vec<ImageHandle> {
         let lines = lines as i32;
         let full_screen = region.start == Line(0);
         self.retain(|placement| {
@@ -97,7 +153,7 @@ impl Placements {
             } else {
                 placement.anchor.line < region.start || placement.anchor.line >= region.end
             };
-            if outside_region {
+            if outside_region || placement.relative.is_some() {
                 return true;
             }
             placement.anchor.line -= lines;
@@ -106,54 +162,64 @@ impl Placements {
             } else {
                 placement.anchor.line >= region.start
             }
-        });
+        })
     }
 
-    pub fn scroll_down(&mut self, region: &std::ops::Range<Line>, lines: usize) {
+    pub fn scroll_down(
+        &mut self,
+        region: &std::ops::Range<Line>,
+        lines: usize,
+    ) -> Vec<ImageHandle> {
         let lines = lines as i32;
         self.retain(|placement| {
-            if placement.anchor.line < region.start || placement.anchor.line >= region.end {
+            if placement.relative.is_some()
+                || placement.anchor.line < region.start
+                || placement.anchor.line >= region.end
+            {
                 return true;
             }
             placement.anchor.line += lines;
             placement.anchor.line < region.end
-        });
+        })
     }
 
     pub fn remove_matching(
         &mut self,
         mut matches: impl FnMut(&Placement) -> bool,
-    ) -> Vec<ImageHandle> {
+    ) -> (Vec<ImageHandle>, Vec<ImageHandle>) {
         let handles: Vec<_> = self
             .entries
             .values()
             .filter(|placement| matches(placement))
             .map(|placement| placement.handle)
             .collect();
-        let mut images = Vec::with_capacity(handles.len());
+        let mut selected_images = Vec::with_capacity(handles.len());
+        let mut relative_images = Vec::new();
         for handle in handles {
             if let Some(placement) = self.entries.get(&handle) {
-                images.push(placement.image);
+                selected_images.push(placement.image);
             }
-            self.remove(handle);
+            relative_images.extend(self.remove(handle));
         }
-        images
+        (selected_images, relative_images)
     }
 
     pub fn image_is_placed(&self, image: ImageHandle) -> bool {
         self.entries.values().any(|placement| placement.image == image)
     }
 
-    pub fn remove_image(&mut self, image: ImageHandle) {
+    pub fn remove_image(&mut self, image: ImageHandle) -> Vec<ImageHandle> {
         let handles: Vec<_> = self
             .entries
             .values()
             .filter(|placement| placement.image == image)
             .map(|placement| placement.handle)
             .collect();
+        let mut relative_images = Vec::new();
         for handle in handles {
-            self.remove(handle);
+            relative_images.extend(self.remove(handle));
         }
+        relative_images
     }
 
     pub fn insert(
@@ -162,16 +228,51 @@ impl Placements {
         image_id: Option<NonZeroU32>,
         command: &Command,
         anchor: Point,
-    ) -> Result<PlacementHandle, GraphicsError> {
+    ) -> Result<PlacementInsert, GraphicsError> {
         let placement_id = NonZeroU32::new(command.placement_id.unwrap_or(0));
         let named = image_id.zip(placement_id);
         let replaced = named.and_then(|key| self.named.get(&key).copied());
+        let relative = match (
+            NonZeroU32::new(command.parent_image_id.unwrap_or(0)),
+            NonZeroU32::new(command.parent_placement_id.unwrap_or(0)),
+        ) {
+            (None, None) => None,
+            (Some(parent_image), Some(parent_placement)) => {
+                if command.unicode_placeholder == Some(1) {
+                    return Err(GraphicsError::Invalid);
+                }
+                let parent = self
+                    .named
+                    .get(&(parent_image, parent_placement))
+                    .copied()
+                    .ok_or(GraphicsError::NoParent)?;
+                let mut ancestor = Some(parent);
+                let mut depth = 0;
+                while let Some(handle) = ancestor {
+                    if Some(handle) == replaced {
+                        return Err(GraphicsError::Cycle);
+                    }
+                    depth += 1;
+                    if depth > MAX_RELATIVE_PLACEMENT_DEPTH {
+                        return Err(GraphicsError::TooDeep);
+                    }
+                    ancestor = self
+                        .entries
+                        .get(&handle)
+                        .and_then(|placement| placement.relative.map(|relative| relative.parent));
+                }
+                Some(RelativePlacement {
+                    parent,
+                    horizontal_cells: command.horizontal_offset.unwrap_or(0),
+                    vertical_cells: command.vertical_offset.unwrap_or(0),
+                })
+            },
+            _ => return Err(GraphicsError::Invalid),
+        };
         if replaced.is_none() && self.entries.len() == MAX_PLACEMENTS_PER_BUFFER {
             return Err(GraphicsError::NoSpace);
         }
-        if let Some(handle) = replaced {
-            self.remove(handle);
-        }
+        let orphaned_relative_images = replaced.map_or_else(Vec::new, |handle| self.remove(handle));
 
         let handle = PlacementHandle(self.next_handle);
         self.next_handle = self.next_handle.checked_add(1).ok_or(GraphicsError::TooLarge)?;
@@ -192,31 +293,51 @@ impl Placements {
             rows: NonZeroU32::new(command.rows.unwrap_or(0)).map(NonZeroU32::get),
             z_index: command.z_index.unwrap_or(0),
             virtual_placement: command.unicode_placeholder == Some(1),
+            relative,
             creation_serial: self.serial,
         };
         self.entries.insert(handle, placement);
         if let Some(key) = named {
             self.named.insert(key, handle);
         }
-        Ok(handle)
+        Ok(PlacementInsert { handle, orphaned_relative_images })
     }
 
-    fn retain(&mut self, mut keep: impl FnMut(&mut Placement) -> bool) {
+    fn retain(&mut self, mut keep: impl FnMut(&mut Placement) -> bool) -> Vec<ImageHandle> {
         let removed: Vec<_> = self
             .entries
             .iter_mut()
             .filter_map(|(handle, placement)| (!keep(placement)).then_some(*handle))
             .collect();
+        let mut relative_images = Vec::new();
         for handle in removed {
-            self.remove(handle);
+            relative_images.extend(self.remove(handle));
         }
+        relative_images
     }
 
-    fn remove(&mut self, handle: PlacementHandle) {
-        if let Some(placement) = self.entries.remove(&handle) {
-            if let Some(key) = placement.image_id.zip(placement.placement_id) {
-                self.named.remove(&key);
-            }
+    fn remove(&mut self, handle: PlacementHandle) -> Vec<ImageHandle> {
+        let Some(placement) = self.entries.remove(&handle) else {
+            return Vec::new();
+        };
+        if let Some(key) = placement.image_id.zip(placement.placement_id) {
+            self.named.remove(&key);
         }
+        let children: Vec<_> = self
+            .entries
+            .values()
+            .filter(|candidate| {
+                candidate.relative.is_some_and(|relative| relative.parent == handle)
+            })
+            .map(|candidate| candidate.handle)
+            .collect();
+        let mut relative_images = Vec::with_capacity(children.len());
+        for child in children {
+            if let Some(placement) = self.entries.get(&child) {
+                relative_images.push(placement.image);
+            }
+            relative_images.extend(self.remove(child));
+        }
+        relative_images
     }
 }

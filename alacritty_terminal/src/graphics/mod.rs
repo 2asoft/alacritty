@@ -13,8 +13,8 @@ pub use parser::{
     Transmission,
 };
 pub use placeholder::{PLACEHOLDER, PlaceholderCell, decode_placeholder};
-pub(crate) use placement::Placements;
 pub use placement::{Placement, PlacementHandle, RenderableGraphic};
+pub(crate) use placement::{PlacementInsert, Placements};
 pub use storage::{GraphicsState, Image, ImageHandle, StoreOutcome};
 pub use transaction::{GraphicsRequest, PendingResult, PendingTransmission, process_request};
 pub(crate) use transport::load_transport;

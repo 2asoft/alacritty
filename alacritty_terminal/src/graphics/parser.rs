@@ -91,6 +91,9 @@ pub enum GraphicsError {
     Unsupported,
     LocalTransmissionDisabled,
     NotFound,
+    NoParent,
+    TooDeep,
+    Cycle,
     Io,
 }
 
@@ -104,6 +107,9 @@ impl GraphicsError {
             Self::Unsupported => "ENOTSUP",
             Self::LocalTransmissionDisabled => "EACCES",
             Self::NotFound => "ENOENT",
+            Self::NoParent => "ENOPARENT",
+            Self::TooDeep => "ETOODEEP",
+            Self::Cycle => "ECYCLE",
             Self::Io => "EIO",
         }
     }
