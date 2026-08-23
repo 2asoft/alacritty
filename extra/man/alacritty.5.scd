@@ -625,6 +625,30 @@ Windows: _"powershell"_
 
 	Default: _"OnlyCopy"_
 
+## GRAPHICS
+
+	This section documents the *[terminal.graphics]* table.
+
+	*enabled* = _true_ | _false_
+
+		Enable the Kitty terminal graphics protocol. The development default remains
+		disabled until the private fork completes protocol conformance.
+
+		Default: _false_
+
+	*storage_limit* = _<integer>_
+
+		Maximum decoded image bytes retained for each terminal screen buffer.
+
+		Default: _320000000_
+
+	*local_transmission* = _true_ | _false_
+
+		Allow graphics commands to read regular files, temporary files, and shared
+		memory from the host. Direct transfers are unaffected.
+
+		Default: _true_
+
 # MOUSE
 
 This section documents the *[mouse]* table of the configuration file.

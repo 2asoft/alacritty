@@ -358,6 +358,9 @@ pub struct Config {
 
     /// OSC52 support mode.
     pub osc52: Osc52,
+
+    /// Kitty graphics protocol options.
+    pub graphics: GraphicsConfig,
 }
 
 impl Default for Config {
@@ -369,7 +372,27 @@ impl Default for Config {
             vi_mode_cursor_style: Default::default(),
             kitty_keyboard: Default::default(),
             osc52: Default::default(),
+            graphics: Default::default(),
         }
+    }
+}
+
+/// Kitty graphics protocol options.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GraphicsConfig {
+    /// Whether Kitty graphics commands are processed.
+    pub enabled: bool,
+
+    /// Maximum decoded image bytes retained per screen buffer.
+    pub storage_limit: usize,
+
+    /// Whether commands may read regular files or shared memory.
+    pub local_transmission: bool,
+}
+
+impl Default for GraphicsConfig {
+    fn default() -> Self {
+        Self { enabled: false, storage_limit: 320_000_000, local_transmission: true }
     }
 }
 
@@ -528,6 +551,11 @@ impl<T> Term<T> {
             self.keyboard_mode_stack = Vec::new();
             self.inactive_keyboard_mode_stack = Vec::new();
             self.mode.remove(TermMode::KITTY_KEYBOARD_PROTOCOL);
+        }
+
+        if old_config.graphics.enabled && !self.config.graphics.enabled {
+            self.graphics_parser.abort();
+            self.graphics_command = None;
         }
 
         // Damage everything on config updates.
@@ -1080,6 +1108,11 @@ impl<T: EventListener> Handler for Term<T> {
     }
 
     fn apc_end(&mut self) -> bool {
+        if !self.config.graphics.enabled {
+            self.graphics_parser.abort();
+            return false;
+        }
+
         if let Some(command) = self.graphics_parser.end() {
             self.graphics_command = Some(command);
             true
@@ -2556,7 +2589,11 @@ mod tests {
     #[test]
     fn kitty_apc_stops_parser_at_command_boundary() {
         let size = TermSize::new(5, 10);
-        let mut term = Term::new(Config::default(), &size, VoidListener);
+        let config = Config {
+            graphics: GraphicsConfig { enabled: true, ..Default::default() },
+            ..Default::default()
+        };
+        let mut term = Term::new(config, &size, VoidListener);
         let mut parser = ansi::Processor::<ansi::StdSyncHandler>::new();
         let input = b"\x1b_Gi=42;AAAA\x1b\\after";
 
@@ -2566,6 +2603,19 @@ mod tests {
         assert_eq!(command.image_id, Some(42));
         assert_eq!(command.payload, b"AAAA");
         assert_eq!(&input[consumed..], b"\\after");
+    }
+
+    #[test]
+    fn kitty_apc_is_discarded_when_disabled() {
+        let size = TermSize::new(5, 10);
+        let mut term = Term::new(Config::default(), &size, VoidListener);
+        let mut parser = ansi::Processor::<ansi::StdSyncHandler>::new();
+        let input = b"\x1b_Gi=42;AAAA\x1b\\after";
+
+        let consumed = parser.advance_until_terminated(&mut term, input);
+
+        assert_eq!(consumed, input.len());
+        assert!(term.take_graphics_command().is_none());
     }
 
     #[test]

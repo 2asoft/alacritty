@@ -13,6 +13,10 @@ Kitty graphics support spans generic APC recognition, terminal protocol and imag
 5. Display code snapshots immutable pixel handles and resolved placement geometry while locked.
 6. The renderer uploads disposable textures and composites them in protocol z layers after releasing the lock.
 
+## Configuration
+
+`[terminal.graphics]` currently defaults to disabled while conformance work is active. Its decoded storage limit defaults to 320,000,000 bytes per screen buffer, and local-object transmission defaults to allowed. Disabled APC commands are recognized and discarded without creating an ordered parser barrier.
+
 ## Invariants
 
 - Every placement references a live image.
