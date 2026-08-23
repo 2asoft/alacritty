@@ -27,6 +27,7 @@ use crossfont::{Rasterize, Rasterizer, Size as FontSize};
 use unicode_width::UnicodeWidthChar;
 
 use alacritty_terminal::event::{EventListener, OnResize, WindowSize};
+use alacritty_terminal::graphics::decode_placeholder;
 use alacritty_terminal::grid::Dimensions as TermDimensions;
 use alacritty_terminal::index::{Column, Direction, Line, Point};
 use alacritty_terminal::selection::Selection;
@@ -817,7 +818,7 @@ impl Display {
         let cursor = content.cursor();
 
         let size_info = self.size_info;
-        let graphics: Vec<_> = terminal
+        let mut graphics: Vec<_> = terminal
             .graphics()
             .renderables()
             .into_iter()
@@ -866,6 +867,67 @@ impl Display {
                 })
             })
             .collect();
+
+        let cell_width = size_info.cell_width();
+        let cell_height = size_info.cell_height();
+        for viewport_line in 0..size_info.screen_lines() {
+            let grid_line = Line(viewport_line as i32 - display_offset as i32);
+            let mut previous = None;
+            for column in 0..size_info.columns() {
+                let point = Point::new(grid_line, Column(column));
+                let cell = &terminal.grid()[point];
+                let Some(placeholder) = decode_placeholder(cell, previous) else {
+                    previous = None;
+                    continue;
+                };
+                previous = Some(placeholder);
+                let Some(prototype) = terminal
+                    .graphics()
+                    .placeholder_renderable(placeholder.image_id, placeholder.placement_id)
+                else {
+                    continue;
+                };
+                let (Some(columns), Some(rows)) = (prototype.columns, prototype.rows) else {
+                    continue;
+                };
+                if u32::from(placeholder.column) >= columns || u32::from(placeholder.row) >= rows {
+                    continue;
+                }
+
+                let image_width = prototype.pixels.width();
+                let image_height = prototype.pixels.height();
+                let crop_x = prototype.source_x.min(image_width);
+                let crop_y = prototype.source_y.min(image_height);
+                let crop_width = prototype
+                    .source_width
+                    .unwrap_or(image_width - crop_x)
+                    .min(image_width - crop_x);
+                let crop_height = prototype
+                    .source_height
+                    .unwrap_or(image_height - crop_y)
+                    .min(image_height - crop_y);
+                let tile_left = u32::from(placeholder.column) * crop_width / columns;
+                let tile_right = (u32::from(placeholder.column) + 1) * crop_width / columns;
+                let tile_top = u32::from(placeholder.row) * crop_height / rows;
+                let tile_bottom = (u32::from(placeholder.row) + 1) * crop_height / rows;
+                if tile_left == tile_right || tile_top == tile_bottom {
+                    continue;
+                }
+                graphics.push(RenderableImage {
+                    image: prototype.image,
+                    content_generation: prototype.content_generation,
+                    pixels: prototype.pixels,
+                    x: size_info.padding_x() + column as f32 * cell_width,
+                    y: size_info.padding_y() + viewport_line as f32 * cell_height,
+                    width: cell_width,
+                    height: cell_height,
+                    source_x: crop_x + tile_left,
+                    source_y: crop_y + tile_top,
+                    source_width: tile_right - tile_left,
+                    source_height: tile_bottom - tile_top,
+                });
+            }
+        }
 
         let cursor_point = terminal.grid().cursor.point;
         let total_lines = terminal.grid().total_lines();

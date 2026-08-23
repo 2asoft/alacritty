@@ -98,6 +98,7 @@ impl GraphicsState {
         let mut renderables: Vec<_> = self
             .placements
             .values()
+            .filter(|placement| !placement.virtual_placement)
             .filter_map(|placement| {
                 let image = self.images.get(&placement.image)?;
                 Some(RenderableGraphic {
@@ -127,6 +128,41 @@ impl GraphicsState {
             (graphic.z_index, image_id, graphic.creation_serial)
         });
         renderables
+    }
+
+    pub fn placeholder_renderable(
+        &self,
+        image_id: u32,
+        placement_id: u32,
+    ) -> Option<RenderableGraphic> {
+        let image_id = NonZeroU32::new(image_id)?;
+        let image = self.image_by_id(image_id)?;
+        let placement_id = NonZeroU32::new(placement_id);
+        let placement = self
+            .placements
+            .values()
+            .filter(|placement| {
+                placement.virtual_placement
+                    && placement.image == image.handle
+                    && placement_id.is_none_or(|id| placement.placement_id == Some(id))
+            })
+            .min_by_key(|placement| placement.creation_serial)?;
+        Some(RenderableGraphic {
+            image: image.handle,
+            pixels: image.pixels.clone(),
+            anchor: placement.anchor,
+            source_x: placement.source_x,
+            source_y: placement.source_y,
+            source_width: placement.source_width,
+            source_height: placement.source_height,
+            x_offset: placement.x_offset,
+            y_offset: placement.y_offset,
+            columns: placement.columns,
+            rows: placement.rows,
+            z_index: placement.z_index,
+            content_generation: image.content_generation,
+            creation_serial: placement.creation_serial,
+        })
     }
 
     pub fn scroll_up(&mut self, region: &std::ops::Range<Line>, lines: usize, history_size: usize) {

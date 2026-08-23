@@ -1,6 +1,8 @@
 mod image;
 mod parser;
+mod placeholder;
 mod placement;
+mod rowcolumn_diacritics;
 mod storage;
 mod transaction;
 mod transport;
@@ -10,6 +12,7 @@ pub use parser::{
     Action, Command, Compression, DeleteTarget, Format, GraphicsApcParser, GraphicsError,
     Transmission,
 };
+pub use placeholder::{PLACEHOLDER, PlaceholderCell, decode_placeholder};
 pub(crate) use placement::Placements;
 pub use placement::{Placement, PlacementHandle, RenderableGraphic};
 pub use storage::{GraphicsState, Image, ImageHandle, StoreOutcome};

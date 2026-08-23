@@ -57,7 +57,7 @@
   ],
   "purpose": "observational, not pass/fail",
   "schema": 1,
-  "source_digest": "80b412f7a8f012fb2c20c5dad614f515dc2c6c35924a417706e1bf9f9fccef08",
+  "source_digest": "77db4b9ed77dc0ea01e410a7bd472107fbcef9da94c83e196e9bae66259cf397",
   "toolchain": {
     "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)"
   }

@@ -1,6 +1,6 @@
 # Project practices
 
-Follow repository formatting and test conventions. For Rust changes, run focused tests first, then `cargo fmt --check`, relevant workspace tests, and `cargo clippy --workspace --all-targets -- -D warnings` when practical.
+Follow repository formatting and test conventions. For Rust changes, run focused tests first, then `cargo +nightly fmt --all --check`, relevant workspace tests, and `cargo clippy --workspace --all-targets -- -D warnings` when practical. CI uses nightly formatting because repository settings require unstable rustfmt options.
 
 ## Graphics work
 

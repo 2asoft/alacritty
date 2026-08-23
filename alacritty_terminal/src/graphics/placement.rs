@@ -26,6 +26,7 @@ pub struct Placement {
     pub(crate) columns: Option<u32>,
     pub(crate) rows: Option<u32>,
     pub(crate) z_index: i32,
+    pub(crate) virtual_placement: bool,
     pub(crate) creation_serial: u64,
 }
 
@@ -62,6 +63,10 @@ impl Placement {
 
     pub fn z_index(&self) -> i32 {
         self.z_index
+    }
+
+    pub fn is_virtual(&self) -> bool {
+        self.virtual_placement
     }
 }
 
@@ -186,6 +191,7 @@ impl Placements {
             columns: NonZeroU32::new(command.columns.unwrap_or(0)).map(NonZeroU32::get),
             rows: NonZeroU32::new(command.rows.unwrap_or(0)).map(NonZeroU32::get),
             z_index: command.z_index.unwrap_or(0),
+            virtual_placement: command.unicode_placeholder == Some(1),
             creation_serial: self.serial,
         };
         self.entries.insert(handle, placement);
