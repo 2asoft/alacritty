@@ -346,6 +346,9 @@ pub struct Term<T> {
     /// Placement anchor currently undergoing deferred graphics processing.
     deferred_graphics_anchor: Option<Point>,
 
+    graphics_processing: bool,
+    cancel_graphics_processing: bool,
+
     /// Graphics state paired with the active grid.
     graphics: GraphicsState,
 
@@ -543,6 +546,8 @@ impl<T> Term<T> {
             graphics_command: None,
             pending_graphics_transmission: None,
             deferred_graphics_anchor: None,
+            graphics_processing: false,
+            cancel_graphics_processing: false,
             graphics: GraphicsState::new(graphics_storage_limit),
             inactive_graphics: GraphicsState::new(graphics_storage_limit),
         }
@@ -627,6 +632,13 @@ impl<T> Term<T> {
 
         self.graphics.set_storage_limit(self.config.graphics.storage_limit);
         self.inactive_graphics.set_storage_limit(self.config.graphics.storage_limit);
+        if self.graphics_processing
+            && (old_config.graphics.enabled && !self.config.graphics.enabled
+                || old_config.graphics.local_transmission
+                    && !self.config.graphics.local_transmission)
+        {
+            self.cancel_graphics_processing = true;
+        }
         if old_config.graphics.enabled && !self.config.graphics.enabled {
             self.graphics_parser.abort();
             self.graphics_command = None;
@@ -802,6 +814,8 @@ impl<T> Term<T> {
 
     pub fn begin_graphics_processing(&mut self, request: &GraphicsRequest) {
         self.deferred_graphics_anchor = request.anchor();
+        self.graphics_processing = true;
+        self.cancel_graphics_processing = false;
     }
 
     /// Options required to process a deferred graphics command outside the terminal lock.
@@ -822,6 +836,11 @@ impl<T> Term<T> {
     where
         T: EventListener,
     {
+        self.graphics_processing = false;
+        if std::mem::take(&mut self.cancel_graphics_processing) {
+            self.deferred_graphics_anchor = None;
+            return;
+        }
         processed.set_anchor(self.deferred_graphics_anchor.take());
         match processed {
             ProcessedCommand::Decoded { command, image }
@@ -2942,6 +2961,25 @@ mod tests {
         term.graphics.place(&command, Point::default()).unwrap();
         term.clear_screen(ansi::ClearMode::All);
         assert!(term.graphics.placements().next().is_none());
+    }
+
+    #[test]
+    fn disabling_graphics_cancels_deferred_commit() {
+        let size = TermSize::new(5, 3);
+        let enabled = Config {
+            graphics: GraphicsConfig { enabled: true, ..Default::default() },
+            ..Default::default()
+        };
+        let mut term = Term::new(enabled, &size, VoidListener);
+        let command = GraphicsCommand { image_id: Some(1), ..Default::default() };
+        term.begin_graphics_processing(&GraphicsRequest::Command(Ok(command.clone())));
+        term.set_options(Config::default());
+        term.commit_graphics_command(ProcessedCommand::Decoded {
+            command,
+            image: crate::graphics::PixelBuffer::from_rgba(1, 1, Arc::from([1, 2, 3, 4])),
+        });
+
+        assert!(term.graphics.images().next().is_none());
     }
 
     #[test]
