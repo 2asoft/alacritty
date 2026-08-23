@@ -1,0 +1,21 @@
+[package]
+name = "alacritty-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+alacritty_terminal = { path = "../alacritty_terminal" }
+
+[[bin]]
+name = "kitty_stream"
+path = "fuzz_targets/kitty_stream.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
