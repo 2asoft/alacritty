@@ -736,6 +736,8 @@ impl Display {
             self.window.set_resize_increments(PhysicalSize::new(cell_width, cell_height));
         }
 
+        terminal.set_cell_dimensions(cell_width.round() as u16, cell_height.round() as u16);
+
         // Resize when terminal when its dimensions have changed.
         if self.size_info.screen_lines() != new_size.screen_lines
             || self.size_info.columns() != new_size.columns()

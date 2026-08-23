@@ -334,6 +334,9 @@ pub struct Term<T> {
     /// Config directly for the terminal.
     config: Config,
 
+    cell_width: u16,
+    cell_height: u16,
+
     /// Streaming parser for the current APC graphics command.
     graphics_parser: GraphicsApcParser,
 
@@ -529,6 +532,8 @@ impl<T> Term<T> {
             event_proxy,
             damage,
             config,
+            cell_width: 1,
+            cell_height: 1,
             grid,
             tabs,
             inactive_keyboard_mode_stack: Default::default(),
@@ -855,15 +860,16 @@ impl<T> Term<T> {
             ProcessedCommand::Decoded { command, image } => {
                 let result = if command.action == Some(GraphicsAction::TransmitAndPlace) {
                     let anchor = command.anchor.unwrap_or(self.grid.cursor.point);
-                    self.graphics.store_and_place(&command, image, anchor)
+                    self.graphics
+                        .store_and_place(&command, image, anchor, self.cell_width, self.cell_height)
+                        .map(|(outcome, span)| (outcome.image_id, Some(span)))
                 } else {
-                    self.graphics.store(&command, image)
+                    self.graphics.store(&command, image).map(|outcome| (outcome.image_id, None))
+                };
+                if let Ok((_, Some(span))) = result {
+                    self.advance_graphics_cursor(&command, span);
                 }
-                .map(|outcome| outcome.image_id);
-                if result.is_ok() && command.action == Some(GraphicsAction::TransmitAndPlace) {
-                    self.advance_graphics_cursor(&command);
-                }
-                self.graphics_response(&command, result);
+                self.graphics_response(&command, result.map(|(image_id, _)| image_id));
             },
             ProcessedCommand::Metadata(command) => {
                 if command.action == Some(GraphicsAction::Delete) {
@@ -876,12 +882,18 @@ impl<T> Term<T> {
                 } else if command.action == Some(GraphicsAction::Place) {
                     let result = self
                         .graphics
-                        .place(&command, command.anchor.unwrap_or(self.grid.cursor.point))
-                        .map(|_| std::num::NonZeroU32::new(command.image_id.unwrap_or(0)));
-                    if result.is_ok() {
-                        self.advance_graphics_cursor(&command);
+                        .placement_cell_span(&command, self.cell_width, self.cell_height)
+                        .and_then(|span| {
+                            self.graphics
+                                .place(&command, command.anchor.unwrap_or(self.grid.cursor.point))
+                                .map(|_| {
+                                    (std::num::NonZeroU32::new(command.image_id.unwrap_or(0)), span)
+                                })
+                        });
+                    if let Ok((_, span)) = result {
+                        self.advance_graphics_cursor(&command, span);
                     }
-                    self.graphics_response(&command, result);
+                    self.graphics_response(&command, result.map(|(image_id, _)| image_id));
                 } else if command.action == Some(GraphicsAction::Animate) {
                     let result = self
                         .graphics
@@ -906,7 +918,7 @@ impl<T> Term<T> {
         self.mark_fully_damaged();
     }
 
-    fn advance_graphics_cursor(&mut self, command: &GraphicsCommand)
+    fn advance_graphics_cursor(&mut self, command: &GraphicsCommand, span: (u32, u32))
     where
         T: EventListener,
     {
@@ -917,8 +929,8 @@ impl<T> Term<T> {
         {
             return;
         }
-        let columns = usize::try_from(command.columns.unwrap_or(0)).unwrap_or(usize::MAX);
-        let rows = usize::try_from(command.rows.unwrap_or(0)).unwrap_or(usize::MAX);
+        let columns = usize::try_from(span.0).unwrap_or(usize::MAX);
+        let rows = usize::try_from(span.1).unwrap_or(usize::MAX);
         self.move_forward(columns);
         self.move_down(rows);
     }
@@ -978,6 +990,11 @@ impl<T> Term<T> {
     /// Mutable access to the raw grid data structure.
     pub fn grid_mut(&mut self) -> &mut Grid<Cell> {
         &mut self.grid
+    }
+
+    pub fn set_cell_dimensions(&mut self, width: u16, height: u16) {
+        self.cell_width = width.max(1);
+        self.cell_height = height.max(1);
     }
 
     /// Resize terminal to new dimensions.
@@ -3055,7 +3072,7 @@ mod tests {
         term.grid.cursor.point = Point::new(Line(1), Column(1));
         let placement = GraphicsCommand { columns: Some(3), rows: Some(2), ..Default::default() };
 
-        term.advance_graphics_cursor(&placement);
+        term.advance_graphics_cursor(&placement, (3, 2));
         assert_eq!(term.grid.cursor.point, Point::new(Line(3), Column(4)));
 
         for command in [
@@ -3068,7 +3085,7 @@ mod tests {
             },
         ] {
             term.grid.cursor.point = Point::new(Line(1), Column(1));
-            term.advance_graphics_cursor(&command);
+            term.advance_graphics_cursor(&command, (3, 2));
             assert_eq!(term.grid.cursor.point, Point::new(Line(1), Column(1)));
         }
     }

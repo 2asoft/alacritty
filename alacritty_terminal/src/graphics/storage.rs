@@ -353,6 +353,52 @@ impl GraphicsState {
         Ok(())
     }
 
+    pub fn placement_cell_span(
+        &self,
+        command: &Command,
+        cell_width: u16,
+        cell_height: u16,
+    ) -> Result<(u32, u32), GraphicsError> {
+        let cell_width = cell_width.max(1);
+        let cell_height = cell_height.max(1);
+        let handle = self.command_image_handle(command)?;
+        let image = self.images.get(&handle).ok_or(GraphicsError::NotFound)?;
+        let image_width = image.pixels.width();
+        let image_height = image.pixels.height();
+        let source_x = command.x.unwrap_or(0).min(image_width);
+        let source_y = command.y.unwrap_or(0).min(image_height);
+        let source_width = command
+            .crop_width
+            .filter(|width| *width != 0)
+            .unwrap_or(image_width - source_x)
+            .min(image_width - source_x);
+        let source_height = command
+            .crop_height
+            .filter(|height| *height != 0)
+            .unwrap_or(image_height - source_y)
+            .min(image_height - source_y);
+        if source_width == 0 || source_height == 0 {
+            return Err(GraphicsError::Invalid);
+        }
+        let columns = command.columns.filter(|columns| *columns != 0);
+        let rows = command.rows.filter(|rows| *rows != 0);
+        match (columns, rows) {
+            (Some(columns), Some(rows)) => Ok((columns, rows)),
+            (Some(columns), None) => Ok((
+                columns,
+                scaled_cells(columns, cell_width, source_height, source_width, cell_height)?,
+            )),
+            (None, Some(rows)) => Ok((
+                scaled_cells(rows, cell_height, source_width, source_height, cell_width)?,
+                rows,
+            )),
+            (None, None) => Ok((
+                divide_ceil(source_width, u32::from(cell_width))?,
+                divide_ceil(source_height, u32::from(cell_height))?,
+            )),
+        }
+    }
+
     pub fn place(
         &mut self,
         command: &Command,
@@ -675,12 +721,15 @@ impl GraphicsState {
         command: &Command,
         pixels: PixelBuffer,
         anchor: Point,
-    ) -> Result<StoreOutcome, GraphicsError> {
+        cell_width: u16,
+        cell_height: u16,
+    ) -> Result<(StoreOutcome, (u32, u32)), GraphicsError> {
         let mut transaction = self.clone();
         let outcome = transaction.store_inner(command, pixels)?;
+        let span = transaction.placement_cell_span(command, cell_width, cell_height)?;
         transaction.place_handle(outcome.handle, command, anchor)?;
         *self = transaction;
-        Ok(outcome)
+        Ok((outcome, span))
     }
 
     pub fn store(
@@ -822,6 +871,35 @@ impl GraphicsState {
             }
         }
     }
+}
+
+fn scaled_cells(
+    cells: u32,
+    cell_pixels: u16,
+    source_numerator: u32,
+    source_denominator: u32,
+    other_cell_pixels: u16,
+) -> Result<u32, GraphicsError> {
+    let numerator = u128::from(cells)
+        .checked_mul(u128::from(cell_pixels))
+        .and_then(|value| value.checked_mul(u128::from(source_numerator)))
+        .ok_or(GraphicsError::TooLarge)?;
+    let denominator = u128::from(source_denominator)
+        .checked_mul(u128::from(other_cell_pixels))
+        .ok_or(GraphicsError::TooLarge)?;
+    let result = numerator
+        .checked_add(denominator - 1)
+        .and_then(|value| value.checked_div(denominator))
+        .ok_or(GraphicsError::TooLarge)?;
+    u32::try_from(result.max(1)).map_err(|_| GraphicsError::TooLarge)
+}
+
+fn divide_ceil(numerator: u32, denominator: u32) -> Result<u32, GraphicsError> {
+    numerator
+        .checked_add(denominator - 1)
+        .and_then(|value| value.checked_div(denominator))
+        .map(|value| value.max(1))
+        .ok_or(GraphicsError::TooLarge)
 }
 
 #[cfg(test)]
@@ -1030,7 +1108,7 @@ mod tests {
         };
 
         assert_eq!(
-            state.store_and_place(&replacement, pixels(2, 4), Point::default()),
+            state.store_and_place(&replacement, pixels(2, 4), Point::default(), 1, 1),
             Err(GraphicsError::NoParent)
         );
         assert_eq!(
@@ -1038,6 +1116,25 @@ mod tests {
             &[1; 4]
         );
         assert_eq!(state.placements().count(), 1);
+    }
+
+    #[test]
+    fn computes_explicit_inferred_and_native_placement_spans() {
+        let mut state = GraphicsState::new(20_000);
+        let image = Command { image_id: Some(1), ..Default::default() };
+        state.store(&image, PixelBuffer::from_rgba(100, 50, Arc::from(vec![255; 20_000]))).unwrap();
+
+        assert_eq!(state.placement_cell_span(&image, 10, 20).unwrap(), (10, 3));
+        assert_eq!(
+            state
+                .placement_cell_span(&Command { columns: Some(5), ..image.clone() }, 10, 20)
+                .unwrap(),
+            (5, 2)
+        );
+        assert_eq!(
+            state.placement_cell_span(&Command { rows: Some(2), ..image }, 10, 20).unwrap(),
+            (8, 2)
+        );
     }
 
     #[test]
