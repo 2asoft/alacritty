@@ -26,6 +26,7 @@ Kitty graphics support spans generic APC recognition, terminal protocol and imag
 - Relative placement graphs are acyclic, depth-bounded, and free of dangling parents.
 - Image replacement is atomic.
 - Dropping every GPU texture does not change terminal semantics.
+- Every image pass restores the regular text blend function before a later text batch or frame.
 - Graphics state never crosses primary and alternate screen ownership.
 - APC and command parser memory remains bounded for malformed or incomplete input.
 

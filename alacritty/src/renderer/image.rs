@@ -171,6 +171,9 @@ impl ImageRenderer {
             gl::BindBuffer(gl::ARRAY_BUFFER, 0);
             gl::BindVertexArray(0);
             gl::UseProgram(0);
+            // Text rendering relies on dual-source blending and does not reset this state before
+            // every batch. Restore the renderer's regular blend function after image composition.
+            gl::BlendFunc(gl::SRC1_COLOR, gl::ONE_MINUS_SRC1_COLOR);
         }
     }
 
