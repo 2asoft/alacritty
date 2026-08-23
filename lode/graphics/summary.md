@@ -41,6 +41,7 @@ Malformed, unsupported, oversized, exhausted, or inaccessible operations produce
 - `alacritty_terminal/src/graphics/` - typed commands, bounded canonical decoding, per-screen image storage, relative placement graphs, and Unicode placeholder decoding.
 - `scripts/generate-kitty-diacritics.py` - authoritative placeholder row/column table regeneration.
 - `scripts/kitty-graphics-smoke.sh` - isolated headless-Sway screenshot and repeated-redraw text stability validation.
+- `scripts/kitty-graphics-benchmark.sh` - release-mode ordinary-text parser comparison with graphics disabled and enabled.
 - `fuzz/fuzz_targets/kitty_stream.rs` - bounded stateful PTY/parser/decoder/grid fuzz target.
 - `alacritty_terminal/src/term/mod.rs` - screen state, reset, resize, and render snapshot boundary.
 - `alacritty_terminal/src/grid/resize.rs` - primary-buffer reflow implementation.
