@@ -54,6 +54,14 @@ fn tile_regions(width: u32, height: u32, maximum: u32) -> Vec<TileRegion> {
     regions
 }
 
+fn intersect_scissors(left: [i32; 4], right: [i32; 4]) -> [i32; 4] {
+    let x = left[0].max(right[0]);
+    let y = left[1].max(right[1]);
+    let right_edge = left[0].saturating_add(left[2]).min(right[0].saturating_add(right[2]));
+    let top_edge = left[1].saturating_add(left[3]).min(right[1].saturating_add(right[3]));
+    [x, y, right_edge.saturating_sub(x).max(0), top_edge.saturating_sub(y).max(0)]
+}
+
 fn texture_bytes(regions: &[TileRegion]) -> Option<usize> {
     regions.iter().try_fold(0usize, |total, region| {
         usize::try_from(region.upload_width)
@@ -66,6 +74,16 @@ fn texture_bytes(regions: &[TileRegion]) -> Option<usize> {
             .and_then(|pixels| pixels.checked_mul(4))
             .and_then(|bytes| total.checked_add(bytes))
     })
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(super) struct ImageViewport {
+    pub width: f32,
+    pub height: f32,
+    pub clip_x: f32,
+    pub clip_y: f32,
+    pub clip_width: f32,
+    pub clip_height: f32,
 }
 
 #[derive(Clone, Debug)]
@@ -188,19 +206,42 @@ impl ImageRenderer {
 
     pub(super) fn draw(
         &mut self,
-        viewport_width: f32,
-        viewport_height: f32,
+        viewport: ImageViewport,
         images: &[RenderableImage],
         cache_limit: usize,
     ) {
         self.evict_for(0, cache_limit);
-        if images.is_empty() {
+        if images.is_empty() || viewport.clip_width <= 0. || viewport.clip_height <= 0. {
+            return;
+        }
+
+        let mut previous_scissor = [0; 4];
+        // SAFETY: A current context exists and `previous_scissor` is writable state storage.
+        let scissor_was_enabled = unsafe {
+            let enabled = gl::IsEnabled(gl::SCISSOR_TEST) == gl::TRUE;
+            gl::GetIntegerv(gl::SCISSOR_BOX, previous_scissor.as_mut_ptr());
+            enabled
+        };
+        let content_scissor = [
+            viewport.clip_x.floor() as i32,
+            (viewport.height - viewport.clip_y - viewport.clip_height).floor() as i32,
+            viewport.clip_width.ceil() as i32,
+            viewport.clip_height.ceil() as i32,
+        ];
+        let scissor = if scissor_was_enabled {
+            intersect_scissors(previous_scissor, content_scissor)
+        } else {
+            content_scissor
+        };
+        if scissor[2] <= 0 || scissor[3] <= 0 {
             return;
         }
 
         // SAFETY: All GL names are owned by this renderer and a current context is established by
         // `Display::draw`. Uploaded slices remain alive for each call consuming their pointers.
         unsafe {
+            gl::Enable(gl::SCISSOR_TEST);
+            gl::Scissor(scissor[0], scissor[1], scissor[2], scissor[3]);
             gl::UseProgram(self.program.id());
             gl::Uniform1i(self.texture_uniform, 0);
             gl::ActiveTexture(gl::TEXTURE0);
@@ -224,8 +265,8 @@ impl ImageRenderer {
                             break;
                         };
                         self.draw_tile(
-                            viewport_width,
-                            viewport_height,
+                            viewport.width,
+                            viewport.height,
                             image,
                             tile.texture,
                             tile.region,
@@ -245,7 +286,7 @@ impl ImageRenderer {
             let tiles: Vec<_> =
                 cached.tiles.iter().map(|tile| (tile.texture, tile.region)).collect();
             for (texture, region) in tiles {
-                self.draw_tile(viewport_width, viewport_height, image, texture, region);
+                self.draw_tile(viewport.width, viewport.height, image, texture, region);
             }
         }
 
@@ -258,6 +299,15 @@ impl ImageRenderer {
             // Text rendering relies on dual-source blending and does not reset this state before
             // every batch. Restore the renderer's regular blend function after image composition.
             gl::BlendFunc(gl::SRC1_COLOR, gl::ONE_MINUS_SRC1_COLOR);
+            gl::Scissor(
+                previous_scissor[0],
+                previous_scissor[1],
+                previous_scissor[2],
+                previous_scissor[3],
+            );
+            if !scissor_was_enabled {
+                gl::Disable(gl::SCISSOR_TEST);
+            }
         }
     }
 
@@ -447,5 +497,6 @@ mod tests {
                 .all(|region| region.upload_width == 1 && region.upload_height == 1)
         );
         assert_eq!(texture_bytes(&single_pixel_tiles), Some(24));
+        assert_eq!(intersect_scissors([0, 0, 10, 10], [5, -5, 10, 10]), [5, 0, 5, 5]);
     }
 }

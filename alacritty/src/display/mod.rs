@@ -864,9 +864,7 @@ impl Display {
             })
             .into_iter()
             .filter_map(|graphic| {
-                let viewport_line =
-                    term::point_to_viewport(display_offset, Point::new(graphic.line, Column(0)))?
-                        .line;
+                let viewport_line = graphic.line.0 + display_offset as i32;
                 let image_width = graphic.pixels.width();
                 let image_height = graphic.pixels.height();
                 let source_x = graphic.source_x.min(image_width);

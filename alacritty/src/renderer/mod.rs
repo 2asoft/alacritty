@@ -12,6 +12,7 @@ use glutin::display::{GetGlDisplay, GlDisplay};
 use log::{LevelFilter, debug, info};
 use unicode_width::UnicodeWidthChar;
 
+use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::Point;
 use alacritty_terminal::term::cell::Flags;
 
@@ -32,7 +33,7 @@ mod text;
 pub use image::RenderableImage;
 pub use text::{GlyphCache, LoaderApi};
 
-use image::ImageRenderer;
+use image::{ImageRenderer, ImageViewport};
 use shader::ShaderVersion;
 use text::{Gles2Renderer, Glsl3Renderer, TextRenderer};
 
@@ -186,7 +187,15 @@ impl Renderer {
         images: &[RenderableImage],
         cache_limit: usize,
     ) {
-        self.image_renderer.draw(size_info.width(), size_info.height(), images, cache_limit);
+        let viewport = ImageViewport {
+            width: size_info.width(),
+            height: size_info.height(),
+            clip_x: size_info.padding_x(),
+            clip_y: size_info.padding_y(),
+            clip_width: size_info.cell_width() * size_info.columns() as f32,
+            clip_height: size_info.cell_height() * size_info.screen_lines() as f32,
+        };
+        self.image_renderer.draw(viewport, images, cache_limit);
     }
 
     pub fn draw_cells<I: Iterator<Item = RenderableCell>>(
