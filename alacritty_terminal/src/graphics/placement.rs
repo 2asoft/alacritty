@@ -106,6 +106,37 @@ impl Placements {
         self.entries.values()
     }
 
+    pub fn tracked_anchors(&self) -> Vec<(PlacementHandle, Point)> {
+        self.entries
+            .values()
+            .filter(|placement| !placement.virtual_placement && placement.relative.is_none())
+            .map(|placement| (placement.handle, placement.anchor))
+            .collect()
+    }
+
+    pub fn update_tracked_anchors(
+        &mut self,
+        anchors: &HashMap<PlacementHandle, Point>,
+    ) -> Vec<ImageHandle> {
+        let removed: Vec<_> = self
+            .entries
+            .values_mut()
+            .filter(|placement| !placement.virtual_placement && placement.relative.is_none())
+            .filter_map(|placement| match anchors.get(&placement.handle) {
+                Some(anchor) => {
+                    placement.anchor = *anchor;
+                    None
+                },
+                None => Some(placement.handle),
+            })
+            .collect();
+        let mut relative_images = Vec::new();
+        for handle in removed {
+            relative_images.extend(self.remove(handle));
+        }
+        relative_images
+    }
+
     pub fn clear(&mut self) {
         self.entries.clear();
         self.named.clear();

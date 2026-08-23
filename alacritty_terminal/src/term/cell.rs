@@ -133,6 +133,8 @@ pub struct CellExtra {
     zerowidth: ArrayVec<char, MAX_ZEROWIDTH_CHARS>,
     underline_color: Option<Color>,
     hyperlink: Option<Hyperlink>,
+    #[cfg_attr(feature = "serde", serde(skip))]
+    graphics_anchors: Vec<u64>,
 }
 
 /// Content and attributes of a single cell in the terminal grid.
@@ -171,6 +173,25 @@ impl Cell {
     pub fn push_zerowidth(&mut self, character: char) {
         let extra = self.extra.get_or_insert(Default::default());
         let _ = Arc::make_mut(extra).zerowidth.try_push(character);
+    }
+
+    pub(crate) fn push_graphics_anchor(&mut self, anchor: u64) {
+        let extra = self.extra.get_or_insert(Default::default());
+        Arc::make_mut(extra).graphics_anchors.push(anchor);
+    }
+
+    pub(crate) fn take_graphics_anchors(&mut self) -> Vec<u64> {
+        let Some(extra) = self.extra.as_mut() else {
+            return Vec::new();
+        };
+        let anchors = std::mem::take(&mut Arc::make_mut(extra).graphics_anchors);
+        if extra.zerowidth.is_empty()
+            && extra.underline_color.is_none()
+            && extra.hyperlink.is_none()
+        {
+            self.extra = None;
+        }
+        anchors
     }
 
     /// Remove all wide char data from a cell.
@@ -242,7 +263,10 @@ impl GridCell for Cell {
                     | Flags::WIDE_CHAR_SPACER
                     | Flags::LEADING_WIDE_CHAR_SPACER,
             )
-            && self.extra.as_ref().map(|extra| extra.zerowidth.is_empty()) != Some(false)
+            && self
+                .extra
+                .as_ref()
+                .is_none_or(|extra| extra.zerowidth.is_empty() && extra.graphics_anchors.is_empty())
     }
 
     #[inline]

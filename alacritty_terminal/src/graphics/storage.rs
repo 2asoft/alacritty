@@ -117,6 +117,15 @@ impl GraphicsState {
         self.placements.values()
     }
 
+    pub(crate) fn tracked_anchors(&self) -> Vec<(PlacementHandle, Point)> {
+        self.placements.tracked_anchors()
+    }
+
+    pub(crate) fn update_tracked_anchors(&mut self, anchors: &HashMap<PlacementHandle, Point>) {
+        let relative_images = self.placements.update_tracked_anchors(anchors);
+        self.remove_orphaned_relative_images(relative_images);
+    }
+
     pub fn renderables(&self) -> Vec<RenderableGraphic> {
         self.renderables_with_virtual_origins(|_, _| None)
     }

@@ -1,5 +1,6 @@
 //! Exports the `Term` type which is a high-level API for the Grid.
 
+use std::collections::HashMap;
 use std::ops::{Index, IndexMut, Range};
 use std::sync::Arc;
 use std::{cmp, mem, ptr, slice, str};
@@ -16,7 +17,8 @@ use unicode_width::UnicodeWidthChar;
 use crate::event::{Event, EventListener};
 use crate::graphics::{
     Action as GraphicsAction, Command as GraphicsCommand, GraphicsApcParser, GraphicsError,
-    GraphicsRequest, GraphicsState, PendingResult, PendingTransmission, ProcessedCommand,
+    GraphicsRequest, GraphicsState, PendingResult, PendingTransmission, PlacementHandle,
+    ProcessedCommand,
 };
 use crate::grid::{Dimensions, Grid, GridIterator, Scroll};
 use crate::index::{self, Boundary, Column, Direction, Line, Point, Side};
@@ -424,6 +426,41 @@ pub enum Osc52 {
     OnlyPaste,
     /// Both are accepted.
     CopyPaste,
+}
+
+fn resize_grid_with_graphics(
+    grid: &mut Grid<Cell>,
+    graphics: &mut GraphicsState,
+    reflow: bool,
+    lines: usize,
+    columns: usize,
+) {
+    let tracked_anchors = graphics.tracked_anchors();
+    if tracked_anchors.is_empty() {
+        grid.resize(reflow, lines, columns);
+        return;
+    }
+    for (handle, point) in tracked_anchors {
+        if point.line >= grid.topmost_line()
+            && point.line <= grid.bottommost_line()
+            && point.column.0 < grid.columns()
+        {
+            grid[point].push_graphics_anchor(handle.0);
+        }
+    }
+
+    grid.resize(reflow, lines, columns);
+
+    let mut anchors = HashMap::new();
+    for line in grid.topmost_line().0..grid.screen_lines() as i32 {
+        for column in 0..grid.columns() {
+            let point = Point::new(Line(line), Column(column));
+            for handle in grid[point].take_graphics_anchors() {
+                anchors.insert(PlacementHandle(handle), point);
+            }
+        }
+    }
+    graphics.update_tracked_anchors(&anchors);
 }
 
 impl<T> Term<T> {
@@ -915,8 +952,14 @@ impl<T> Term<T> {
         self.vi_mode_cursor.point.line += delta;
 
         let is_alt = self.mode.contains(TermMode::ALT_SCREEN);
-        self.grid.resize(!is_alt, num_lines, num_cols);
-        self.inactive_grid.resize(is_alt, num_lines, num_cols);
+        resize_grid_with_graphics(&mut self.grid, &mut self.graphics, !is_alt, num_lines, num_cols);
+        resize_grid_with_graphics(
+            &mut self.inactive_grid,
+            &mut self.inactive_graphics,
+            is_alt,
+            num_lines,
+            num_cols,
+        );
 
         // Invalidate selection and tabs only when necessary.
         if old_cols != num_cols {
@@ -2859,6 +2902,38 @@ mod tests {
         term.graphics.place(&command, Point::default()).unwrap();
         term.clear_screen(ansi::ClearMode::All);
         assert!(term.graphics.placements().next().is_none());
+    }
+
+    #[test]
+    fn graphics_anchor_follows_its_cell_through_width_reflow() {
+        let size = TermSize::new(10, 3);
+        let mut term = Term::new(Config::default(), &size, VoidListener);
+        for column in 0..10 {
+            term.grid[Line(0)][Column(column)].c = if column == 6 { 'X' } else { 'a' };
+        }
+        term.grid[Line(0)][Column(9)].flags.insert(Flags::WRAPLINE);
+        term.grid.cursor.point = Point::new(Line(0), Column(9));
+        let command = GraphicsCommand { image_id: Some(1), ..Default::default() };
+        let pixels = crate::graphics::PixelBuffer::from_rgba(1, 1, Arc::from([1, 2, 3, 4]));
+        term.graphics.store(&command, pixels).unwrap();
+        term.graphics.place(&command, Point::new(Line(0), Column(6))).unwrap();
+
+        term.resize(TermSize::new(5, 3));
+
+        let mut marker = None;
+        for line in term.grid.topmost_line().0..term.screen_lines() as i32 {
+            for column in 0..term.columns() {
+                let point = Point::new(Line(line), Column(column));
+                if term.grid[point].c == 'X' {
+                    marker = Some(point);
+                }
+            }
+        }
+        assert_eq!(term.graphics.placements().next().unwrap().anchor(), marker.unwrap());
+
+        term.resize(TermSize::new(10, 3));
+        let anchor = term.graphics.placements().next().unwrap().anchor();
+        assert_eq!(term.grid[anchor].c, 'X');
     }
 
     #[test]
