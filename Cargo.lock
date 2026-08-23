@@ -115,6 +115,7 @@ dependencies = [
  "serde",
  "serde_json",
  "signal-hook",
+ "tempfile",
  "unicode-width",
  "vte",
  "windows-sys 0.59.0",

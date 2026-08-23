@@ -88,6 +88,7 @@ pub enum GraphicsError {
     Unsupported,
     LocalTransmissionDisabled,
     NotFound,
+    Io,
 }
 
 impl GraphicsError {
@@ -100,6 +101,7 @@ impl GraphicsError {
             Self::Unsupported => "ENOTSUP",
             Self::LocalTransmissionDisabled => "EACCES",
             Self::NotFound => "ENOENT",
+            Self::Io => "EIO",
         }
     }
 }

@@ -6,7 +6,7 @@ use base64::engine::general_purpose::STANDARD as Base64;
 use miniz_oxide::inflate::decompress_to_vec_zlib_with_limit;
 use png::{ColorType, Decoder, Limits, Transformations};
 
-use super::{Action, Command, Compression, Format, GraphicsError, Transmission};
+use super::{Action, Command, Compression, Format, GraphicsError, Transmission, load_transport};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PixelBuffer {
@@ -64,24 +64,27 @@ pub fn process_command(
         return ProcessedCommand::Metadata(command);
     }
 
-    if command.transmission.unwrap_or_default() != Transmission::Direct {
-        let error = if local_transmission {
-            GraphicsError::Unsupported
-        } else {
-            GraphicsError::LocalTransmissionDisabled
-        };
-        return ProcessedCommand::Error { command: Some(command), error };
-    }
+    let source = match command.transmission.unwrap_or_default() {
+        Transmission::Direct => Base64.decode(&command.payload).map_err(|_| GraphicsError::Decode),
+        _ if !local_transmission => Err(GraphicsError::LocalTransmissionDisabled),
+        transmission => load_transport(transmission, &command, storage_limit),
+    };
+    let source = match source {
+        Ok(source) => source,
+        Err(error) => return ProcessedCommand::Error { command: Some(command), error },
+    };
 
-    match decode_direct(&command, storage_limit) {
+    match decode_source(&command, source, storage_limit) {
         Ok(image) => ProcessedCommand::Decoded { command, image },
         Err(error) => ProcessedCommand::Error { command: Some(command), error },
     }
 }
 
-fn decode_direct(command: &Command, storage_limit: usize) -> Result<PixelBuffer, GraphicsError> {
-    let mut source = Base64.decode(&command.payload).map_err(|_| GraphicsError::Decode)?;
-
+fn decode_source(
+    command: &Command,
+    mut source: Vec<u8>,
+    storage_limit: usize,
+) -> Result<PixelBuffer, GraphicsError> {
     if command.compression == Some(Compression::Zlib) {
         let decompressed_limit = match command.format.unwrap_or_default() {
             Format::Rgb => raw_size(command, 3)?,
