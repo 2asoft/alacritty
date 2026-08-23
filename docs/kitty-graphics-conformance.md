@@ -24,13 +24,13 @@ The protocol defines required behavior. External tests identify scenarios and ex
 | Replacement | First replacement chunk removes old placements and data | Gap |
 | Placement | Native spans and cursor movement include pixel offsets | Covered |
 | Placement | Cell offsets clamp to cell bounds | Covered |
-| Placement | Full deletion-selector matrix, including empty ranges | Partial |
+| Placement | Full deletion-selector matrix, including empty ranges | Covered |
 | Placement | RIS removes visible placements but preserves placements in scrollback | Gap |
 | Relative | `P` without `Q` resolves the protocol fallback parent | Covered |
 | Relative | Virtual placement ID zero can act as a parent | Covered |
 | Relative | Cycles, depth, lifetime, and virtual-child rejection | Covered |
 | Placeholder | Color IDs, third diacritic, inheritance, and placement IDs | Covered |
-| Placeholder | Fit-and-center source geometry for a virtual placement box | Gap |
+| Placeholder | Fit-and-center source geometry for a virtual placement box | Covered |
 | Placeholder | Resolved placeholder glyphs remain invisible through transparent pixels | Covered |
 | Animation | Frame create, edit, control, composition, and scheduling | Partial |
 | Animation | Root editing, gap preservation, frame-number replies, and root promotion | Covered |

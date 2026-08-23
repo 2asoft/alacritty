@@ -85,6 +85,95 @@ fn texture_bytes(regions: &[TileRegion]) -> Option<usize> {
     })
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ImageGeometry {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    source_x: f64,
+    source_y: f64,
+    source_width: f64,
+    source_height: f64,
+    clip_top: f32,
+    clip_bottom: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct SampledTileQuad {
+    destination_left: f32,
+    destination_right: f32,
+    destination_top: f32,
+    destination_bottom: f32,
+    texture_left: f32,
+    texture_right: f32,
+    texture_top: f32,
+    texture_bottom: f32,
+}
+
+fn sample_tile(image: &ImageGeometry, region: TileRegion) -> Option<SampledTileQuad> {
+    if image.source_width <= 0. || image.source_height <= 0. {
+        return None;
+    }
+    // Intersect relative to the source origin so small extents survive large coordinates.
+    let tile_left = f64::from(region.core_x) - image.source_x;
+    let tile_top = f64::from(region.core_y) - image.source_y;
+    let left = tile_left.max(0.);
+    let right = (tile_left + f64::from(region.core_width)).min(image.source_width);
+    let top = tile_top.max(0.);
+    let bottom = (tile_top + f64::from(region.core_height)).min(image.source_height);
+    if left >= right || top >= bottom {
+        return None;
+    }
+
+    let destination_left = image.x + (left / image.source_width) as f32 * image.width;
+    let destination_right = image.x + (right / image.source_width) as f32 * image.width;
+    let mut destination_top = image.y + (top / image.source_height) as f32 * image.height;
+    let mut destination_bottom = image.y + (bottom / image.source_height) as f32 * image.height;
+    let upload_width = f64::from(region.upload_width);
+    let upload_height = f64::from(region.upload_height);
+    if upload_width <= 0. || upload_height <= 0. {
+        return None;
+    }
+    let upload_x = image.source_x - f64::from(region.upload_x);
+    let upload_y = image.source_y - f64::from(region.upload_y);
+    let texture_left = ((upload_x + left) / upload_width) as f32;
+    let texture_right = ((upload_x + right) / upload_width) as f32;
+    let mut texture_top = ((upload_y + top) / upload_height) as f32;
+    let mut texture_bottom = ((upload_y + bottom) / upload_height) as f32;
+    if destination_top < image.clip_top {
+        let span = destination_bottom - destination_top;
+        if span <= 0. {
+            return None;
+        }
+        let fraction = (image.clip_top - destination_top) / span;
+        texture_top += fraction * (texture_bottom - texture_top);
+        destination_top = image.clip_top;
+    }
+    if destination_bottom > image.clip_bottom {
+        let span = destination_bottom - destination_top;
+        if span <= 0. {
+            return None;
+        }
+        let fraction = (destination_bottom - image.clip_bottom) / span;
+        texture_bottom -= fraction * (texture_bottom - texture_top);
+        destination_bottom = image.clip_bottom;
+    }
+    if destination_top >= destination_bottom {
+        return None;
+    }
+    Some(SampledTileQuad {
+        destination_left,
+        destination_right,
+        destination_top,
+        destination_bottom,
+        texture_left,
+        texture_right,
+        texture_top,
+        texture_bottom,
+    })
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(super) struct ImageViewport {
     pub width: f32,
@@ -104,10 +193,10 @@ pub struct RenderableImage {
     pub y: f32,
     pub width: f32,
     pub height: f32,
-    pub source_x: u32,
-    pub source_y: u32,
-    pub source_width: u32,
-    pub source_height: u32,
+    pub source_x: f64,
+    pub source_y: f64,
+    pub source_width: f64,
+    pub source_height: f64,
     pub z_index: i32,
     pub image_id: u32,
     pub creation_serial: u64,
@@ -375,56 +464,64 @@ impl ImageRenderer {
         texture: GLuint,
         region: TileRegion,
     ) {
-        let source_right = image.source_x + image.source_width;
-        let source_bottom = image.source_y + image.source_height;
-        let tile_right = region.core_x + region.core_width;
-        let tile_bottom = region.core_y + region.core_height;
-        let left = image.source_x.max(region.core_x);
-        let right = source_right.min(tile_right);
-        let top = image.source_y.max(region.core_y);
-        let bottom = source_bottom.min(tile_bottom);
-        if left >= right || top >= bottom {
+        let Some(sampled) = sample_tile(
+            &ImageGeometry {
+                x: image.x,
+                y: image.y,
+                width: image.width,
+                height: image.height,
+                source_x: image.source_x,
+                source_y: image.source_y,
+                source_width: image.source_width,
+                source_height: image.source_height,
+                clip_top: image.clip_top,
+                clip_bottom: image.clip_bottom,
+            },
+            region,
+        ) else {
             return;
-        }
-
-        let destination_left =
-            image.x + (left - image.source_x) as f32 / image.source_width as f32 * image.width;
-        let destination_right =
-            image.x + (right - image.source_x) as f32 / image.source_width as f32 * image.width;
-        let mut destination_top =
-            image.y + (top - image.source_y) as f32 / image.source_height as f32 * image.height;
-        let mut destination_bottom =
-            image.y + (bottom - image.source_y) as f32 / image.source_height as f32 * image.height;
-        let texture_left = (left - region.upload_x) as f32 / region.upload_width as f32;
-        let texture_right = (right - region.upload_x) as f32 / region.upload_width as f32;
-        let mut texture_top = (top - region.upload_y) as f32 / region.upload_height as f32;
-        let mut texture_bottom = (bottom - region.upload_y) as f32 / region.upload_height as f32;
-        if destination_top < image.clip_top {
-            let fraction =
-                (image.clip_top - destination_top) / (destination_bottom - destination_top);
-            texture_top += fraction * (texture_bottom - texture_top);
-            destination_top = image.clip_top;
-        }
-        if destination_bottom > image.clip_bottom {
-            let fraction =
-                (destination_bottom - image.clip_bottom) / (destination_bottom - destination_top);
-            texture_bottom -= fraction * (texture_bottom - texture_top);
-            destination_bottom = image.clip_bottom;
-        }
-        if destination_top >= destination_bottom {
-            return;
-        }
-        let left = destination_left / (viewport_width / 2.) - 1.;
-        let right = destination_right / (viewport_width / 2.) - 1.;
-        let top = 1. - destination_top / (viewport_height / 2.);
-        let bottom = 1. - destination_bottom / (viewport_height / 2.);
+        };
+        let left = sampled.destination_left / (viewport_width / 2.) - 1.;
+        let right = sampled.destination_right / (viewport_width / 2.) - 1.;
+        let top = 1. - sampled.destination_top / (viewport_height / 2.);
+        let bottom = 1. - sampled.destination_bottom / (viewport_height / 2.);
         let vertices = [
-            Vertex { x: left, y: top, texture_x: texture_left, texture_y: texture_top },
-            Vertex { x: left, y: bottom, texture_x: texture_left, texture_y: texture_bottom },
-            Vertex { x: right, y: top, texture_x: texture_right, texture_y: texture_top },
-            Vertex { x: right, y: top, texture_x: texture_right, texture_y: texture_top },
-            Vertex { x: right, y: bottom, texture_x: texture_right, texture_y: texture_bottom },
-            Vertex { x: left, y: bottom, texture_x: texture_left, texture_y: texture_bottom },
+            Vertex {
+                x: left,
+                y: top,
+                texture_x: sampled.texture_left,
+                texture_y: sampled.texture_top,
+            },
+            Vertex {
+                x: left,
+                y: bottom,
+                texture_x: sampled.texture_left,
+                texture_y: sampled.texture_bottom,
+            },
+            Vertex {
+                x: right,
+                y: top,
+                texture_x: sampled.texture_right,
+                texture_y: sampled.texture_top,
+            },
+            Vertex {
+                x: right,
+                y: top,
+                texture_x: sampled.texture_right,
+                texture_y: sampled.texture_top,
+            },
+            Vertex {
+                x: right,
+                y: bottom,
+                texture_x: sampled.texture_right,
+                texture_y: sampled.texture_bottom,
+            },
+            Vertex {
+                x: left,
+                y: bottom,
+                texture_x: sampled.texture_left,
+                texture_y: sampled.texture_bottom,
+            },
         ];
 
         // SAFETY: `texture` is cached and `vertices` covers the uploaded buffer range.
@@ -577,5 +674,123 @@ mod tests {
         );
         assert_eq!(texture_bytes(&single_pixel_tiles), Some(24));
         assert_eq!(intersect_scissors([0, 0, 10, 10], [5, -5, 10, 10]), [5, 0, 5, 5]);
+    }
+
+    fn pixel_tile() -> TileRegion {
+        TileRegion {
+            core_x: 0,
+            core_y: 0,
+            core_width: 1,
+            core_height: 1,
+            upload_x: 0,
+            upload_y: 0,
+            upload_width: 1,
+            upload_height: 1,
+        }
+    }
+
+    #[test]
+    fn tiny_source_extents_preserve_visible_destination_at_large_coordinates() {
+        for (x, y) in [(0, 0), (1 << 24, 0), (0, 1 << 24), (1 << 24, 1 << 24)] {
+            let region = TileRegion {
+                core_x: x,
+                core_y: y,
+                core_width: 1,
+                core_height: 1,
+                upload_x: x,
+                upload_y: y,
+                upload_width: 1,
+                upload_height: 1,
+            };
+            let extent = 1. / f64::from(u32::MAX);
+            let image = ImageGeometry {
+                x: 0.,
+                y: 0.,
+                width: 10.,
+                height: 10.,
+                source_x: f64::from(x),
+                source_y: f64::from(y),
+                source_width: extent,
+                source_height: extent,
+                clip_top: f32::NEG_INFINITY,
+                clip_bottom: f32::INFINITY,
+            };
+            let sampled =
+                sample_tile(&image, region).expect("a visible cell retains its source extent");
+            assert_eq!((sampled.destination_left, sampled.destination_right), (0., 10.));
+            assert_eq!((sampled.destination_top, sampled.destination_bottom), (0., 10.));
+        }
+    }
+
+    #[test]
+    fn source_crops_preserve_subpixels_at_large_coordinates() {
+        let coordinate = 1 << 24;
+        let region = TileRegion { core_x: coordinate, upload_x: coordinate, ..pixel_tile() };
+        for (offset, width) in [(0., 1.), (0.25, 0.5)] {
+            let quad = sample_tile(
+                &ImageGeometry {
+                    x: 0.,
+                    y: 0.,
+                    width: 10.,
+                    height: 10.,
+                    source_x: f64::from(coordinate) + offset,
+                    source_y: 0.,
+                    source_width: width,
+                    source_height: 1.,
+                    clip_top: 0.,
+                    clip_bottom: 10.,
+                },
+                region,
+            )
+            .expect("a crop within the tile remains visible");
+            assert_eq!(quad.destination_right - quad.destination_left, 10.);
+            assert_eq!(quad.texture_left, offset as f32);
+            assert_eq!(quad.texture_right, (offset + width) as f32);
+        }
+    }
+
+    #[test]
+    fn fractional_source_rect_keeps_enlarged_placeholder_tile() {
+        let right_half = sample_tile(
+            &ImageGeometry {
+                x: 10.,
+                y: 0.,
+                width: 10.,
+                height: 10.,
+                source_x: 0.5,
+                source_y: 0.,
+                source_width: 0.5,
+                source_height: 1.,
+                clip_top: f32::NEG_INFINITY,
+                clip_bottom: f32::INFINITY,
+            },
+            pixel_tile(),
+        )
+        .expect("right-half source remains sampleable");
+        assert_eq!(right_half.destination_left, 10.);
+        assert_eq!(right_half.destination_right, 20.);
+        assert_eq!(right_half.texture_left, 0.5);
+        assert_eq!(right_half.texture_right, 1.);
+
+        let integer_source = sample_tile(
+            &ImageGeometry {
+                x: 0.,
+                y: 0.,
+                width: 10.,
+                height: 20.,
+                source_x: 0.,
+                source_y: 0.,
+                source_width: 1.,
+                source_height: 1.,
+                clip_top: f32::NEG_INFINITY,
+                clip_bottom: f32::INFINITY,
+            },
+            pixel_tile(),
+        )
+        .expect("integer source still fills the destination");
+        assert_eq!(integer_source.destination_left, 0.);
+        assert_eq!(integer_source.destination_right, 10.);
+        assert_eq!(integer_source.texture_left, 0.);
+        assert_eq!(integer_source.texture_right, 1.);
     }
 }

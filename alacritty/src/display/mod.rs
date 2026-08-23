@@ -81,6 +81,18 @@ const SHORTENER: char = '…';
 /// Color which is used to highlight damaged rects when debugging.
 const DAMAGE_RECT_COLOR: Rgb = Rgb::new(255, 0, 255);
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PlaceholderGeometry {
+    source_x: f64,
+    source_y: f64,
+    source_width: f64,
+    source_height: f64,
+    destination_x: f32,
+    destination_y: f32,
+    destination_width: f32,
+    destination_height: f32,
+}
+
 fn classic_dimensions(
     source: (u32, u32),
     cells: (Option<u32>, Option<u32>),
@@ -103,6 +115,63 @@ fn classic_dimensions(
         },
         (None, None) => (source.0 as f32, source.1 as f32),
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn placeholder_geometry(
+    source_x: u32,
+    source_y: u32,
+    source_width: u32,
+    source_height: u32,
+    columns: u32,
+    rows: u32,
+    column: u16,
+    row: u16,
+    cell_width: f32,
+    cell_height: f32,
+) -> Option<PlaceholderGeometry> {
+    if source_width == 0 || source_height == 0 || columns == 0 || rows == 0 {
+        return None;
+    }
+    let grid_width = f64::from(columns) * f64::from(cell_width);
+    let grid_height = f64::from(rows) * f64::from(cell_height);
+    let scale = (grid_width / f64::from(source_width)).min(grid_height / f64::from(source_height));
+    if !scale.is_finite() || scale <= 0. {
+        return None;
+    }
+    let image_width = f64::from(source_width) * scale;
+    let image_height = f64::from(source_height) * scale;
+    let image_left = (grid_width - image_width) / 2.;
+    let image_top = (grid_height - image_height) / 2.;
+    let cell_left = f64::from(column) * f64::from(cell_width);
+    let cell_top = f64::from(row) * f64::from(cell_height);
+    let left = cell_left.max(image_left);
+    let right = (cell_left + f64::from(cell_width)).min(image_left + image_width);
+    let top = cell_top.max(image_top);
+    let bottom = (cell_top + f64::from(cell_height)).min(image_top + image_height);
+    if left >= right || top >= bottom {
+        return None;
+    }
+    let source_left = ((left - image_left) / scale).clamp(0., f64::from(source_width));
+    let source_right = ((right - image_left) / scale).clamp(0., f64::from(source_width));
+    let source_top = ((top - image_top) / scale).clamp(0., f64::from(source_height));
+    let source_bottom = ((bottom - image_top) / scale).clamp(0., f64::from(source_height));
+    let sampled_width = source_right - source_left;
+    let sampled_height = source_bottom - source_top;
+    if sampled_width <= 0. || sampled_height <= 0. {
+        return None;
+    }
+
+    Some(PlaceholderGeometry {
+        source_x: f64::from(source_x) + source_left,
+        source_y: f64::from(source_y) + source_top,
+        source_width: sampled_width,
+        source_height: sampled_height,
+        destination_x: (left - cell_left) as f32,
+        destination_y: (top - cell_top) as f32,
+        destination_width: (right - left) as f32,
+        destination_height: (bottom - top) as f32,
+    })
 }
 
 #[derive(Debug)]
@@ -918,10 +987,10 @@ impl Display {
                         + (graphic.y_offset as f32).min((cell_height - 1.).max(0.)),
                     width,
                     height,
-                    source_x,
-                    source_y,
-                    source_width,
-                    source_height,
+                    source_x: f64::from(source_x),
+                    source_y: f64::from(source_y),
+                    source_width: f64::from(source_width),
+                    source_height: f64::from(source_height),
                     z_index: graphic.z_index,
                     image_id: graphic.image_id,
                     creation_serial: graphic.creation_serial,
@@ -973,26 +1042,35 @@ impl Display {
                     .source_height
                     .unwrap_or(image_height - crop_y)
                     .min(image_height - crop_y);
-                let tile_left = u32::from(placeholder.column) * crop_width / columns;
-                let tile_right = (u32::from(placeholder.column) + 1) * crop_width / columns;
-                let tile_top = u32::from(placeholder.row) * crop_height / rows;
-                let tile_bottom = (u32::from(placeholder.row) + 1) * crop_height / rows;
-                if tile_left == tile_right || tile_top == tile_bottom {
-                    continue;
-                }
                 rendered_placeholders.insert((viewport_line, column));
+                let Some(geometry) = placeholder_geometry(
+                    crop_x,
+                    crop_y,
+                    crop_width,
+                    crop_height,
+                    columns,
+                    rows,
+                    placeholder.column,
+                    placeholder.row,
+                    cell_width,
+                    cell_height,
+                ) else {
+                    continue;
+                };
                 graphics.push(RenderableImage {
                     image: prototype.image,
                     content_generation: prototype.content_generation,
                     pixels: prototype.pixels,
-                    x: size_info.padding_x() + column as f32 * cell_width,
-                    y: size_info.padding_y() + viewport_line as f32 * cell_height,
-                    width: cell_width,
-                    height: cell_height,
-                    source_x: crop_x + tile_left,
-                    source_y: crop_y + tile_top,
-                    source_width: tile_right - tile_left,
-                    source_height: tile_bottom - tile_top,
+                    x: size_info.padding_x() + column as f32 * cell_width + geometry.destination_x,
+                    y: size_info.padding_y()
+                        + viewport_line as f32 * cell_height
+                        + geometry.destination_y,
+                    width: geometry.destination_width,
+                    height: geometry.destination_height,
+                    source_x: geometry.source_x,
+                    source_y: geometry.source_y,
+                    source_width: geometry.source_width,
+                    source_height: geometry.source_height,
                     z_index: prototype.z_index,
                     image_id: prototype.image_id,
                     creation_serial: prototype.creation_serial,
@@ -1879,6 +1957,49 @@ mod tests {
     use super::*;
 
     #[test]
+    fn placeholder_geometry_fits_and_centers_image_in_virtual_grid() {
+        assert_eq!(placeholder_geometry(0, 0, 10, 20, 4, 2, 0, 0, 10., 20.), None);
+        assert_eq!(
+            placeholder_geometry(0, 0, 10, 20, 4, 2, 1, 0, 10., 20.),
+            Some(PlaceholderGeometry {
+                source_x: 0.,
+                source_y: 0.,
+                source_width: 5.,
+                source_height: 10.,
+                destination_x: 0.,
+                destination_y: 0.,
+                destination_width: 10.,
+                destination_height: 20.,
+            })
+        );
+        assert_eq!(
+            placeholder_geometry(0, 0, 10, 20, 4, 2, 2, 1, 10., 20.),
+            Some(PlaceholderGeometry {
+                source_x: 5.,
+                source_y: 10.,
+                source_width: 5.,
+                source_height: 10.,
+                destination_x: 0.,
+                destination_y: 0.,
+                destination_width: 10.,
+                destination_height: 20.,
+            })
+        );
+    }
+
+    #[test]
+    fn upscaled_single_pixel_covers_all_placeholder_cells() {
+        for row in 0..2 {
+            for column in 0..2 {
+                assert!(
+                    placeholder_geometry(0, 0, 1, 1, 2, 2, column, row, 10., 10.).is_some(),
+                    "missing tile at row={row} column={column}",
+                );
+            }
+        }
+    }
+
+    #[test]
     fn classic_dimensions_preserve_native_pixels_and_inferred_aspect() {
         assert_eq!(classic_dimensions((3, 2), (None, None), (10., 20.), (0, 0)), (3., 2.));
         assert_eq!(classic_dimensions((100, 50), (Some(5), None), (10., 20.), (0, 0)), (50., 25.));
@@ -1893,5 +2014,28 @@ mod tests {
             classic_dimensions((100, 50), (Some(5), Some(2)), (10., 20.), (2, 2)),
             (48., 38.)
         );
+    }
+
+    #[test]
+    fn placeholder_geometry_keeps_fractional_source_edges_for_enlarged_pixel() {
+        let top_left = placeholder_geometry(0, 0, 1, 1, 2, 2, 0, 0, 10., 10.).unwrap();
+        let top_right = placeholder_geometry(0, 0, 1, 1, 2, 2, 1, 0, 10., 10.).unwrap();
+        let bottom_left = placeholder_geometry(0, 0, 1, 1, 2, 2, 0, 1, 10., 10.).unwrap();
+        assert_eq!(top_left, PlaceholderGeometry {
+            source_x: 0.,
+            source_y: 0.,
+            source_width: 0.5,
+            source_height: 0.5,
+            destination_x: 0.,
+            destination_y: 0.,
+            destination_width: 10.,
+            destination_height: 10.,
+        },);
+        assert_eq!(top_left.source_x + top_left.source_width, top_right.source_x);
+        assert_eq!(top_left.source_y + top_left.source_height, bottom_left.source_y);
+        assert_eq!(top_right.source_x, 0.5);
+        assert_eq!(top_right.source_width, 0.5);
+        assert_eq!(bottom_left.source_y, 0.5);
+        assert_eq!(bottom_left.source_height, 0.5);
     }
 }
