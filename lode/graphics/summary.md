@@ -15,7 +15,7 @@ Kitty graphics support spans generic APC recognition, terminal protocol and imag
 
 ## Configuration
 
-`[terminal.graphics]` currently defaults to disabled while conformance work is active. Its decoded storage limit defaults to 320,000,000 bytes per screen buffer, and local-object transmission defaults to allowed. Disabled APC commands are recognized and discarded without creating an ordered parser barrier.
+Kitty graphics support is always available. `[terminal.graphics]` controls resource policy: its decoded storage limit defaults to 320,000,000 bytes per screen buffer, and local-object transmission defaults to allowed.
 
 ## Invariants
 
@@ -43,7 +43,7 @@ Malformed, unsupported, oversized, exhausted, or inaccessible operations produce
 - `alacritty_terminal/src/graphics/` - typed commands, bounded canonical decoding, per-screen image storage, relative placement graphs, and Unicode placeholder decoding.
 - `scripts/generate-kitty-diacritics.py` - authoritative placeholder row/column table regeneration.
 - `scripts/kitty-graphics-smoke.sh` - isolated headless-Sway semantic framebuffer and repeated-redraw validation, including text composited above a negative-z image.
-- `scripts/kitty-graphics-benchmark.sh` - release-mode ordinary-text parser comparison with graphics disabled and enabled.
+- `scripts/kitty-graphics-benchmark.sh` - release-mode ordinary-text parser benchmark.
 - `fuzz/fuzz_targets/kitty_stream.rs` - bounded stateful PTY/parser/decoder/grid fuzz target.
 - `alacritty_terminal/src/term/mod.rs` - screen state, reset, resize, and render snapshot boundary.
 - `alacritty_terminal/src/grid/resize.rs` - primary-buffer reflow implementation.

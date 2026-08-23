@@ -17,7 +17,7 @@ Notable changes to the `alacritty_terminal` crate are documented in its
 
 ### Added
 
-- Experimental private-fork Kitty graphics configuration and OpenGL rendering for classic placements
+- Native Kitty graphics protocol support, including classic, Unicode placeholder, relative, and animated images
 
 ### Fixed
 

@@ -403,9 +403,6 @@ impl Default for Config {
 /// Kitty graphics protocol options.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GraphicsConfig {
-    /// Whether Kitty graphics commands are processed.
-    pub enabled: bool,
-
     /// Maximum decoded image bytes retained per screen buffer.
     pub storage_limit: usize,
 
@@ -415,7 +412,7 @@ pub struct GraphicsConfig {
 
 impl Default for GraphicsConfig {
     fn default() -> Self {
-        Self { enabled: false, storage_limit: 320_000_000, local_transmission: true }
+        Self { storage_limit: 320_000_000, local_transmission: true }
     }
 }
 
@@ -638,19 +635,10 @@ impl<T> Term<T> {
         self.graphics.set_storage_limit(self.config.graphics.storage_limit);
         self.inactive_graphics.set_storage_limit(self.config.graphics.storage_limit);
         if self.graphics_processing
-            && (old_config.graphics.enabled && !self.config.graphics.enabled
-                || old_config.graphics.local_transmission
-                    && !self.config.graphics.local_transmission)
+            && old_config.graphics.local_transmission
+            && !self.config.graphics.local_transmission
         {
             self.cancel_graphics_processing = true;
-        }
-        if old_config.graphics.enabled && !self.config.graphics.enabled {
-            self.graphics_parser.abort();
-            self.graphics_command = None;
-            self.pending_graphics_transmission = None;
-            self.deferred_graphics_anchor = None;
-            self.graphics.clear();
-            self.inactive_graphics.clear();
         }
 
         // Damage everything on config updates.
@@ -1449,11 +1437,6 @@ impl<T: EventListener> Handler for Term<T> {
     }
 
     fn apc_end(&mut self) -> bool {
-        if !self.config.graphics.enabled {
-            self.graphics_parser.abort();
-            return false;
-        }
-
         if let Some(mut command) = self.graphics_parser.end() {
             if let Ok(command) = &mut command {
                 command.anchor = Some(self.grid.cursor.point);
@@ -2956,10 +2939,7 @@ mod tests {
     #[test]
     fn malformed_kitty_command_returns_bounded_error() {
         let size = TermSize::new(5, 10);
-        let config = Config {
-            graphics: GraphicsConfig { enabled: true, ..Default::default() },
-            ..Default::default()
-        };
+        let config = Config { graphics: GraphicsConfig::default(), ..Default::default() };
         let listener = RecordingListener::default();
         let responses = listener.0.clone();
         let mut term = Term::new(config, &size, listener);
@@ -2974,10 +2954,7 @@ mod tests {
     #[test]
     fn short_kitty_payload_returns_enodata_with_response_image_id() {
         let size = TermSize::new(5, 10);
-        let config = Config {
-            graphics: GraphicsConfig { enabled: true, ..Default::default() },
-            ..Default::default()
-        };
+        let config = Config { graphics: GraphicsConfig::default(), ..Default::default() };
         let listener = RecordingListener::default();
         let responses = listener.0.clone();
         let mut term = Term::new(config, &size, listener);
@@ -2993,10 +2970,7 @@ mod tests {
     #[test]
     fn unsupported_kitty_format_preserves_response_image_id() {
         let size = TermSize::new(5, 10);
-        let config = Config {
-            graphics: GraphicsConfig { enabled: true, ..Default::default() },
-            ..Default::default()
-        };
+        let config = Config { graphics: GraphicsConfig::default(), ..Default::default() };
         let listener = RecordingListener::default();
         let responses = listener.0.clone();
         let mut term = Term::new(config, &size, listener);
@@ -3012,10 +2986,7 @@ mod tests {
     #[test]
     fn kitty_frame_response_includes_created_frame_number() {
         let size = TermSize::new(5, 10);
-        let config = Config {
-            graphics: GraphicsConfig { enabled: true, ..Default::default() },
-            ..Default::default()
-        };
+        let config = Config { graphics: GraphicsConfig::default(), ..Default::default() };
         let listener = RecordingListener::default();
         let responses = listener.0.clone();
         let mut term = Term::new(config, &size, listener);
@@ -3041,10 +3012,7 @@ mod tests {
     #[test]
     fn kitty_animation_control_only_responds_to_errors() {
         let size = TermSize::new(5, 10);
-        let config = Config {
-            graphics: GraphicsConfig { enabled: true, ..Default::default() },
-            ..Default::default()
-        };
+        let config = Config { graphics: GraphicsConfig::default(), ..Default::default() };
         let listener = RecordingListener::default();
         let responses = listener.0.clone();
         let mut term = Term::new(config, &size, listener);
@@ -3075,10 +3043,7 @@ mod tests {
     #[test]
     fn kitty_query_response_precedes_later_device_attributes() {
         let size = TermSize::new(5, 10);
-        let config = Config {
-            graphics: GraphicsConfig { enabled: true, ..Default::default() },
-            ..Default::default()
-        };
+        let config = Config { graphics: GraphicsConfig::default(), ..Default::default() };
         let listener = RecordingListener::default();
         let responses = listener.0.clone();
         let mut term = Term::new(config, &size, listener);
@@ -3119,16 +3084,15 @@ mod tests {
     }
 
     #[test]
-    fn disabling_graphics_cancels_deferred_commit() {
+    fn disabling_local_graphics_transmission_cancels_deferred_commit() {
         let size = TermSize::new(5, 3);
-        let enabled = Config {
-            graphics: GraphicsConfig { enabled: true, ..Default::default() },
-            ..Default::default()
-        };
-        let mut term = Term::new(enabled, &size, VoidListener);
+        let mut term = Term::new(Config::default(), &size, VoidListener);
         let command = GraphicsCommand { image_id: Some(1), ..Default::default() };
         term.begin_graphics_processing(&GraphicsRequest::Command(Ok(command.clone())));
-        term.set_options(Config::default());
+        term.set_options(Config {
+            graphics: GraphicsConfig { local_transmission: false, ..Default::default() },
+            ..Default::default()
+        });
         term.commit_graphics_command(ProcessedCommand::Decoded {
             command,
             image: crate::graphics::PixelBuffer::from_rgba(1, 1, Arc::from([1, 2, 3, 4])),
@@ -3231,10 +3195,7 @@ mod tests {
     #[test]
     fn kitty_non_direct_transmission_ignores_chunk_flag() {
         let size = TermSize::new(5, 10);
-        let config = Config {
-            graphics: GraphicsConfig { enabled: true, ..Default::default() },
-            ..Default::default()
-        };
+        let config = Config { graphics: GraphicsConfig::default(), ..Default::default() };
         let mut term = Term::new(config, &size, VoidListener);
         let mut parser = ansi::Processor::<ansi::StdSyncHandler>::new();
         let input = b"\x1b_Gt=f,m=1,i=1;L3RtcC9pbWFnZQ==\x1b\\";
@@ -3249,10 +3210,7 @@ mod tests {
     #[test]
     fn kitty_chunked_transfer_commits_after_final_chunk() {
         let size = TermSize::new(5, 10);
-        let config = Config {
-            graphics: GraphicsConfig { enabled: true, ..Default::default() },
-            ..Default::default()
-        };
+        let config = Config { graphics: GraphicsConfig::default(), ..Default::default() };
         let mut term = Term::new(config, &size, VoidListener);
         let mut parser = ansi::Processor::<ansi::StdSyncHandler>::new();
         let input = b"\x1b_Gf=32,s=1,v=1,i=9,m=1;AQID\x1b\\\x1b_Gm=0;BA==\x1b\\";
@@ -3274,10 +3232,7 @@ mod tests {
     #[test]
     fn kitty_apc_stops_parser_at_command_boundary() {
         let size = TermSize::new(5, 10);
-        let config = Config {
-            graphics: GraphicsConfig { enabled: true, ..Default::default() },
-            ..Default::default()
-        };
+        let config = Config { graphics: GraphicsConfig::default(), ..Default::default() };
         let mut term = Term::new(config, &size, VoidListener);
         let mut parser = ansi::Processor::<ansi::StdSyncHandler>::new();
         let input = b"\x1b_Gi=42;AAAA\x1b\\after";
@@ -3288,19 +3243,6 @@ mod tests {
         assert_eq!(command.image_id, Some(42));
         assert_eq!(command.payload, b"AAAA");
         assert_eq!(&input[consumed..], b"\\after");
-    }
-
-    #[test]
-    fn kitty_apc_is_discarded_when_disabled() {
-        let size = TermSize::new(5, 10);
-        let mut term = Term::new(Config::default(), &size, VoidListener);
-        let mut parser = ansi::Processor::<ansi::StdSyncHandler>::new();
-        let input = b"\x1b_Gi=42;AAAA\x1b\\after";
-
-        let consumed = parser.advance_until_terminated(&mut term, input);
-
-        assert_eq!(consumed, input.len());
-        assert!(term.take_graphics_command().is_none());
     }
 
     #[test]

@@ -14,16 +14,17 @@
       "primary-device-attributes"
     ]
   },
-  "framebuffer_different_pixels": 11512,
+  "framebuffer_different_pixels": 10775,
   "observations": [
     {
       "available": true,
       "cell_size_response": false,
-      "kgp_response": false,
-      "leaked_placeholder_magenta_pixels": 6,
+      "kgp_response": true,
+      "leaked_placeholder_magenta_pixels": 0,
       "primary_device_attributes_response": true,
-      "primary_red_pixels": 0,
+      "primary_red_pixels": 1296,
       "response_sequence": [
+        "kgp-ok",
         "text-area-pixels",
         "screen-size-cells",
         "primary-device-attributes"
@@ -32,7 +33,7 @@
       "terminal": "alacritty",
       "text_area_pixel_response": true,
       "version": "alacritty 0.18.0-dev",
-      "virtual_green_pixels": 0
+      "virtual_green_pixels": 162
     },
     {
       "available": true,
@@ -57,7 +58,7 @@
   ],
   "purpose": "observational, not pass/fail",
   "schema": 1,
-  "source_digest": "a94fc133ddcaac6ef9c7676300a0e0a82ee6ef0ef9687874922a9e790c45f96b",
+  "source_digest": "fea47c50a50ea7510d455e7fcfacc1cf3a08c2cafabbb87eb40e1765f4c12ebf",
   "toolchain": {
     "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)"
   }

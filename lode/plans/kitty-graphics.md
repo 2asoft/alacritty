@@ -1,6 +1,6 @@
 # Kitty graphics implementation plan
 
-Status: validating external conformance and final default
+Status: complete
 
 ## Outcome and acceptance
 
@@ -27,7 +27,7 @@ Implement the complete Kitty terminal graphics protocol described by the accepte
 - Heavy transport and decode work forms an ordered parser barrier and runs outside `Term`'s mutex.
 - Classic placements are independent terminal objects with reflow-aware anchors. Placeholder instances remain ordinary cells.
 - Local transports default on but have a configuration kill switch.
-- Complete support defaults on only after conformance and hardening are complete. The operator chose to keep it disabled for a manual UX review after automated validation, before final default enablement.
+- Kitty graphics support is always available. After manual acceptance and external conformance hardening, the operator chose to remove the temporary protocol-disable option rather than retain a feature switch.
 
 ## Ordered goals
 
@@ -41,7 +41,7 @@ Implement the complete Kitty terminal graphics protocol described by the accepte
 8. [x] Implement Unicode placeholders from authoritative generated combining-mark data, including fit-and-center virtual-box geometry.
 9. [x] Implement relative placement graph semantics. Graph safety, fallback parent selection, and virtual parent placement ID zero pass external scenarios.
 10. [x] Implement animation frame loading, composition, control, deletion, and deadline scheduling, including external root, gap, response, control, overlap, deletion, and excess-data scenarios.
-11. [ ] Complete hostile-input, property, fuzz, renderer-golden, context-loss, and performance validation; enable by default after manual UX acceptance. Stateful stream fuzzing (10,000 instrumented libFuzzer runs with no findings) and an isolated semantic-framebuffer/repeated-redraw screenshot smoke harness that discards and reconstructs image textures every pass, checks text composited above negative-z images, and rejects visible glyphs for transparent Unicode placeholder tiles are in place. A fresh 10-run release benchmark measured the graphics-enabled ordinary-text parser at 0.970x the disabled baseline (no regression).
+11. [x] Complete hostile-input, property, fuzz, renderer-golden, context-loss, and performance validation; remove the temporary protocol-disable option after manual UX acceptance. Stateful stream fuzzing includes 10,000 instrumented runs with no findings plus a fresh 1,000-run always-on pass. The semantic framebuffer smoke discards and reconstructs image textures every pass, checks text above negative-z images, and rejects visible glyphs for transparent Unicode placeholder tiles. The final pre-removal comparison measured the graphics path at 0.970x the disabled baseline, and the always-on 10-run ordinary-text benchmark measured 169.4 ms mean.
 
 Each goal stops only after its focused tests, adjacent suites, formatting, linting, docs, and Lode state pass. Commit verified coherent increments separately.
 

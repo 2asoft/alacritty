@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-for command in cargo hyperfine python3; do
+for command in cargo hyperfine; do
     command -v "$command" >/dev/null || { echo "missing required command: $command" >&2; exit 1; }
 done
 
@@ -15,19 +15,6 @@ cargo build --manifest-path "$root/Cargo.toml" -p alacritty_terminal \
 
 binary="$root/target/release/examples/kitty_parser_benchmark"
 hyperfine --warmup 3 --runs 10 --export-json "$output" \
-    --command-name disabled "$binary disabled $iterations" \
-    --command-name enabled "$binary enabled $iterations"
+    --command-name ordinary-text "$binary $iterations"
 
-python3 - "$output" <<'PY'
-import json
-import sys
-
-results = {result["command"]: result["median"] for result in json.load(open(sys.argv[1]))["results"]}
-disabled = results["disabled"]
-enabled = results["enabled"]
-ratio = enabled / disabled
-print(f"graphics-disabled baseline: {disabled:.6f}s")
-print(f"graphics-enabled ordinary text: {enabled:.6f}s ({ratio:.3f}x)")
-if ratio > 1.05:
-    raise SystemExit("ordinary text parser regression exceeds 5%")
-PY
+printf 'Ordinary-text parser benchmark written to %s\n' "$output"

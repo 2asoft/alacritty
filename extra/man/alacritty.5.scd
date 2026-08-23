@@ -629,13 +629,6 @@ Windows: _"powershell"_
 
 	This section documents the *[terminal.graphics]* table.
 
-	*enabled* = _true_ | _false_
-
-		Enable the Kitty terminal graphics protocol. The development default remains
-		disabled until the private fork completes protocol conformance.
-
-		Default: _false_
-
 	*storage_limit* = _<integer>_
 
 		Maximum decoded image bytes retained for each terminal screen buffer.

@@ -41,7 +41,6 @@ Path(sys.argv[1]).write_text(
     '[window]\n'
     'dimensions = { columns = 60, lines = 24 }\n'
     '[terminal.graphics]\n'
-    'enabled = true\n'
     '[terminal.shell]\n'
     'program = "/bin/sh"\n'
     f'args = ["-c", {quoted}]\n',

@@ -188,7 +188,7 @@ This maps naturally onto Alacritty's existing distinction between terminal state
 
 ## User-visible model
 
-When graphics support is enabled, applications may send Kitty graphics APC sequences directly to Alacritty.
+Applications may send Kitty graphics APC sequences directly to Alacritty.
 
 An application may:
 
@@ -210,29 +210,11 @@ This RFC adds:
 
 ```toml
 [terminal.graphics]
-enabled = true
 storage_limit = 320000000
 local_transmission = true
 ```
 
-### `enabled`
-
-Boolean.
-
-Default after feature completion:
-
-```toml
-enabled = true
-```
-
-When false:
-
-- Kitty APC commands are recognized and discarded;
-- no graphics protocol state is retained;
-- no graphics capability response advertises support;
-- existing graphics state is cleared when configuration transitions from enabled to disabled.
-
-During development, the private fork MAY retain a temporary default of `false` until conformance milestones are complete.
+Kitty graphics support is always available. The configuration controls resource and local-transport policy, not protocol availability.
 
 ### `storage_limit`
 
@@ -3069,7 +3051,7 @@ At this point basic `icat`-style use is functional but the feature is still inco
 - performance;
 - documentation.
 
-Only after Phase 10 should the private fork default `terminal.graphics.enabled` to `true`.
+After Phase 10, remove the temporary protocol-disable option so completed Kitty graphics support is always available.
 
 ---
 

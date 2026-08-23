@@ -31,7 +31,6 @@ fuzz_target!(|data: &[u8]| {
     let size = Size { columns: 16, lines: 8 };
     let config = Config {
         graphics: GraphicsConfig {
-            enabled: true,
             storage_limit: 64 * 1024,
             local_transmission: false,
         },
