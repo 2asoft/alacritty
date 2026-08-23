@@ -851,9 +851,6 @@ impl Display {
                     continue;
                 };
                 previous = Some(placeholder);
-                if placeholder.placement_id == 0 {
-                    continue;
-                }
                 virtual_origins
                     .entry((placeholder.image_id, placeholder.placement_id))
                     .and_modify(|origin| {
@@ -915,10 +912,10 @@ impl Display {
                     pixels: graphic.pixels,
                     x: size_info.padding_x()
                         + graphic.column as f32 * cell_width
-                        + graphic.x_offset as f32,
+                        + (graphic.x_offset as f32).min((cell_width - 1.).max(0.)),
                     y: size_info.padding_y()
                         + viewport_line as f32 * cell_height
-                        + graphic.y_offset as f32,
+                        + (graphic.y_offset as f32).min((cell_height - 1.).max(0.)),
                     width,
                     height,
                     source_x,

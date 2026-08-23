@@ -932,7 +932,7 @@ impl<T> Term<T> {
         T: EventListener,
     {
         if command.cursor_policy == Some(1)
-            || command.unicode_placeholder == Some(1)
+            || command.unicode_placeholder.unwrap_or(0) != 0
             || command.parent_image_id.unwrap_or(0) != 0
             || command.parent_placement_id.unwrap_or(0) != 0
         {
@@ -2968,6 +2968,25 @@ mod tests {
         term.commit_graphics_command(crate::graphics::process_command(command, 4, true));
 
         assert_eq!(responses.lock().unwrap().as_slice(), ["\x1b_Gi=0;EINVAL\x1b\\"]);
+    }
+
+    #[test]
+    fn unsupported_kitty_format_preserves_response_image_id() {
+        let size = TermSize::new(5, 10);
+        let config = Config {
+            graphics: GraphicsConfig { enabled: true, ..Default::default() },
+            ..Default::default()
+        };
+        let listener = RecordingListener::default();
+        let responses = listener.0.clone();
+        let mut term = Term::new(config, &size, listener);
+        let mut parser = ansi::Processor::<ansi::StdSyncHandler>::new();
+        let _consumed =
+            parser.advance_until_terminated(&mut term, b"\x1b_Gi=31,f=42,s=1,v=1;AAAA\x1b\\");
+        let command = term.take_graphics_command().unwrap();
+        term.commit_graphics_command(crate::graphics::process_command(command, 4, true));
+
+        assert_eq!(responses.lock().unwrap().as_slice(), ["\x1b_Gi=31;EINVAL\x1b\\"]);
     }
 
     #[test]

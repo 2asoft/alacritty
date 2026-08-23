@@ -133,6 +133,7 @@ fn decode_source(
             Format::Rgba => raw_size(command, 4)?,
             Format::Png => usize::try_from(command.data_size.ok_or(GraphicsError::Invalid)?)
                 .map_err(|_| GraphicsError::TooLarge)?,
+            Format::Unknown(_) => return Err(GraphicsError::Invalid),
         };
         if decompressed_limit > storage_limit {
             return Err(GraphicsError::NoSpace);
@@ -148,6 +149,7 @@ fn decode_source(
         Format::Rgb => decode_rgb(command, source, storage_limit),
         Format::Rgba => decode_rgba(command, source, storage_limit),
         Format::Png => decode_png(&source, storage_limit),
+        Format::Unknown(_) => Err(GraphicsError::Invalid),
     }
 }
 

@@ -18,16 +18,16 @@ The protocol defines required behavior. External tests identify scenarios and ex
 | Transport | Chunk assembly and cancellation by delete | Covered |
 | Transport | Short direct, file, and shared-memory data return `ENODATA` with request identity | Gap |
 | Transport | Non-regular files return `EBADF` without blocking | Gap |
-| Parser | `f=0`, unknown formats, and out-of-range flag semantics match Kitty | Gap |
-| Parser | Quiet levels suppress success and error responses | Partial: values above 2 remain |
+| Parser | `f=0`, unknown formats, and out-of-range flag semantics match Kitty | Covered |
+| Parser | Quiet levels suppress success and error responses | Covered |
 | Identity | Number-based transmission allocates and reuses the smallest free client ID | Gap |
 | Replacement | First replacement chunk removes old placements and data | Gap |
-| Placement | Native spans and cursor movement include pixel offsets | Gap |
-| Placement | Cell offsets clamp to cell bounds | Gap |
+| Placement | Native spans and cursor movement include pixel offsets | Covered |
+| Placement | Cell offsets clamp to cell bounds | Covered |
 | Placement | Full deletion-selector matrix, including empty ranges | Partial |
 | Placement | RIS removes visible placements but preserves placements in scrollback | Gap |
-| Relative | `P` without `Q` resolves the protocol fallback parent | Gap |
-| Relative | Virtual placement ID zero can act as a parent | Gap |
+| Relative | `P` without `Q` resolves the protocol fallback parent | Covered |
+| Relative | Virtual placement ID zero can act as a parent | Covered |
 | Relative | Cycles, depth, lifetime, and virtual-child rejection | Covered |
 | Placeholder | Color IDs, third diacritic, inheritance, and placement IDs | Covered |
 | Placeholder | Fit-and-center source geometry for a virtual placement box | Gap |

@@ -165,7 +165,7 @@ impl Placements {
             root = self.entries.get(&location.parent)?;
         }
         let root_anchor = if root.virtual_placement {
-            virtual_origin(root.image_id?.get(), root.placement_id?.get())?
+            virtual_origin(root.image_id?.get(), root.placement_id.map_or(0, NonZeroU32::get))?
         } else {
             root.anchor
         };
@@ -289,20 +289,34 @@ impl Placements {
         let placement_id = NonZeroU32::new(command.placement_id.unwrap_or(0));
         let named = image_id.zip(placement_id);
         let replaced = named.and_then(|key| self.named.get(&key).copied());
-        let relative = match (
-            NonZeroU32::new(command.parent_image_id.unwrap_or(0)),
-            NonZeroU32::new(command.parent_placement_id.unwrap_or(0)),
-        ) {
-            (None, None) => None,
-            (Some(parent_image), Some(parent_placement)) => {
-                if command.unicode_placeholder == Some(1) {
+        let parent_image = NonZeroU32::new(command.parent_image_id.unwrap_or(0));
+        let parent_placement = NonZeroU32::new(command.parent_placement_id.unwrap_or(0));
+        let relative = match parent_image {
+            None if parent_placement.is_none() => None,
+            Some(parent_image) => {
+                if command.unicode_placeholder.unwrap_or(0) != 0 {
                     return Err(GraphicsError::Invalid);
                 }
-                let parent = self
-                    .named
-                    .get(&(parent_image, parent_placement))
-                    .copied()
-                    .ok_or(GraphicsError::NoParent)?;
+                let parent = match parent_placement {
+                    Some(parent_placement) => {
+                        self.named.get(&(parent_image, parent_placement)).copied()
+                    },
+                    None => self
+                        .entries
+                        .values()
+                        .filter(|placement| placement.image_id == Some(parent_image))
+                        .min_by_key(|placement| {
+                            (
+                                placement.placement_id.map_or(0, NonZeroU32::get),
+                                placement.creation_serial,
+                            )
+                        })
+                        .map(|placement| placement.handle),
+                }
+                .ok_or(GraphicsError::NoParent)?;
+                if Some(parent) == replaced {
+                    return Err(GraphicsError::Invalid);
+                }
                 let mut ancestor = Some(parent);
                 let mut depth = 0;
                 while let Some(handle) = ancestor {
@@ -324,7 +338,7 @@ impl Placements {
                     vertical_cells: command.vertical_offset.unwrap_or(0),
                 })
             },
-            _ => return Err(GraphicsError::Invalid),
+            None => return Err(GraphicsError::Invalid),
         };
         if replaced.is_none() && self.entries.len() == MAX_PLACEMENTS_PER_BUFFER {
             return Err(GraphicsError::NoSpace);
@@ -350,7 +364,7 @@ impl Placements {
             rows: NonZeroU32::new(command.rows.unwrap_or(0)).map(NonZeroU32::get),
             cell_span,
             z_index: command.z_index.unwrap_or(0),
-            virtual_placement: command.unicode_placeholder == Some(1),
+            virtual_placement: command.unicode_placeholder.unwrap_or(0) != 0,
             relative,
             clip_region: None,
             creation_serial: self.serial,

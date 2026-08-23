@@ -406,19 +406,34 @@ impl GraphicsState {
         }
         let columns = command.columns.filter(|columns| *columns != 0);
         let rows = command.rows.filter(|rows| *rows != 0);
+        let x_offset = command.x_offset.unwrap_or(0).min(u32::from(cell_width - 1));
+        let y_offset = command.y_offset.unwrap_or(0).min(u32::from(cell_height - 1));
         match (columns, rows) {
             (Some(columns), Some(rows)) => Ok((columns, rows)),
             (Some(columns), None) => Ok((
                 columns,
-                scaled_cells(columns, cell_width, source_height, source_width, cell_height)?,
+                scaled_cells(
+                    columns,
+                    cell_width,
+                    x_offset,
+                    source_height,
+                    source_width,
+                    cell_height,
+                )?,
             )),
             (None, Some(rows)) => Ok((
-                scaled_cells(rows, cell_height, source_width, source_height, cell_width)?,
+                scaled_cells(rows, cell_height, y_offset, source_width, source_height, cell_width)?,
                 rows,
             )),
             (None, None) => Ok((
-                divide_ceil(source_width, u32::from(cell_width))?,
-                divide_ceil(source_height, u32::from(cell_height))?,
+                divide_ceil(
+                    source_width.checked_add(x_offset).ok_or(GraphicsError::TooLarge)?,
+                    u32::from(cell_width),
+                )?,
+                divide_ceil(
+                    source_height.checked_add(y_offset).ok_or(GraphicsError::TooLarge)?,
+                    u32::from(cell_height),
+                )?,
             )),
         }
     }
@@ -639,7 +654,7 @@ impl GraphicsState {
             destination_y: command.y.unwrap_or(0),
             width,
             height,
-            overwrite: command.cursor_policy == Some(1),
+            overwrite: command.cursor_policy.unwrap_or(0) != 0,
         })?;
         let old_bytes = destination.storage_bytes();
         let required = composed.storage_bytes();
@@ -965,12 +980,14 @@ impl GraphicsState {
 fn scaled_cells(
     cells: u32,
     cell_pixels: u16,
+    pixel_offset: u32,
     source_numerator: u32,
     source_denominator: u32,
     other_cell_pixels: u16,
 ) -> Result<u32, GraphicsError> {
     let numerator = u128::from(cells)
         .checked_mul(u128::from(cell_pixels))
+        .and_then(|value| value.checked_add(u128::from(pixel_offset)))
         .and_then(|value| value.checked_mul(u128::from(source_numerator)))
         .ok_or(GraphicsError::TooLarge)?;
     let denominator = u128::from(source_denominator)
@@ -1377,6 +1394,33 @@ mod tests {
     }
 
     #[test]
+    fn inferred_placement_spans_widen_pixel_offsets_before_scaling() {
+        let mut state = GraphicsState::new(20_000);
+        let image = Command { image_id: Some(1), ..Default::default() };
+        state.store(&image, PixelBuffer::from_rgba(100, 50, Arc::from(vec![255; 20_000]))).unwrap();
+        assert_eq!(
+            state
+                .placement_cell_span(
+                    &Command { columns: Some(u32::MAX), x_offset: Some(1), ..image.clone() },
+                    2,
+                    2,
+                )
+                .unwrap(),
+            (u32::MAX, 1 << 31)
+        );
+        assert_eq!(
+            state
+                .placement_cell_span(
+                    &Command { rows: Some(u32::MAX), y_offset: Some(1), ..image },
+                    8,
+                    2,
+                )
+                .unwrap(),
+            (1 << 31, u32::MAX)
+        );
+    }
+
+    #[test]
     fn computes_explicit_inferred_and_native_placement_spans() {
         let mut state = GraphicsState::new(20_000);
         let image = Command { image_id: Some(1), ..Default::default() };
@@ -1390,8 +1434,20 @@ mod tests {
             (5, 2)
         );
         assert_eq!(
-            state.placement_cell_span(&Command { rows: Some(2), ..image }, 10, 20).unwrap(),
+            state.placement_cell_span(&Command { rows: Some(2), ..image.clone() }, 10, 20).unwrap(),
             (8, 2)
+        );
+
+        state.store(&image, PixelBuffer::from_rgba(10, 20, Arc::from(vec![255; 800]))).unwrap();
+        assert_eq!(
+            state
+                .placement_cell_span(
+                    &Command { x_offset: Some(5), y_offset: Some(5), ..image },
+                    10,
+                    20,
+                )
+                .unwrap(),
+            (2, 2)
         );
     }
 
@@ -1612,6 +1668,37 @@ mod tests {
     }
 
     #[test]
+    fn relative_parent_without_placement_id_uses_lowest_parent_placement() {
+        let mut state = GraphicsState::new(8);
+        let parent = Command { image_id: Some(1), ..Default::default() };
+        let child = Command { image_id: Some(2), ..Default::default() };
+        state.store(&parent, pixels(1, 4)).unwrap();
+        state.store(&child, pixels(2, 4)).unwrap();
+        state
+            .place(
+                &Command { placement_id: Some(7), ..parent.clone() },
+                Point::new(Line(1), crate::index::Column(1)),
+            )
+            .unwrap();
+        state
+            .place(
+                &Command { placement_id: Some(3), ..parent },
+                Point::new(Line(2), crate::index::Column(2)),
+            )
+            .unwrap();
+        state
+            .place(
+                &Command { placement_id: Some(1), parent_image_id: Some(1), ..child },
+                Point::default(),
+            )
+            .unwrap();
+
+        let child =
+            state.renderables().into_iter().find(|renderable| renderable.image_id == 2).unwrap();
+        assert_eq!((child.line, child.column), (Line(2), 2));
+    }
+
+    #[test]
     fn location_deletion_does_not_affect_virtual_placements() {
         let mut state = GraphicsState::new(4);
         let prototype = Command {
@@ -1640,7 +1727,6 @@ mod tests {
         let mut state = GraphicsState::new(8);
         let prototype = Command {
             image_id: Some(1),
-            placement_id: Some(1),
             unicode_placeholder: Some(1),
             columns: Some(1),
             rows: Some(1),
@@ -1656,7 +1742,6 @@ mod tests {
                     image_id: Some(2),
                     placement_id: Some(1),
                     parent_image_id: Some(1),
-                    parent_placement_id: Some(1),
                     horizontal_offset: Some(3),
                     vertical_offset: Some(2),
                     ..Default::default()
@@ -1667,7 +1752,7 @@ mod tests {
 
         assert!(state.renderables().is_empty());
         let renderables = state.renderables_with_virtual_origins(|image_id, placement_id| {
-            (image_id == 1 && placement_id == 1)
+            (image_id == 1 && placement_id == 0)
                 .then_some(Point::new(Line(4), crate::index::Column(5)))
         });
         assert_eq!(renderables.len(), 1);
@@ -1711,11 +1796,23 @@ mod tests {
                     placement_id: Some(1),
                     parent_image_id: Some(1),
                     parent_placement_id: Some(9),
-                    ..image
+                    ..image.clone()
                 },
                 Point::default(),
             ),
             Err(GraphicsError::Cycle)
+        );
+        assert_eq!(
+            state.place(
+                &Command {
+                    placement_id: Some(9),
+                    parent_image_id: Some(1),
+                    parent_placement_id: Some(9),
+                    ..image
+                },
+                Point::default(),
+            ),
+            Err(GraphicsError::Invalid)
         );
     }
 
