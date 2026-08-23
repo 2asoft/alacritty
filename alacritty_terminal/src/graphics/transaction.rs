@@ -7,6 +7,13 @@ pub enum GraphicsRequest {
 }
 
 impl GraphicsRequest {
+    pub fn command(&self) -> Option<&Command> {
+        match self {
+            Self::Command(Ok(command)) | Self::Chunked { command, .. } => Some(command),
+            Self::Command(Err(_)) => None,
+        }
+    }
+
     pub fn anchor(&self) -> Option<crate::index::Point> {
         match self {
             Self::Command(Ok(command)) | Self::Chunked { command, .. } => command.anchor,

@@ -768,9 +768,8 @@ impl<T> Term<T> {
             Err(error) => return Some(GraphicsRequest::Command(Err(error))),
         };
         let encoded_limit = self
-            .config
             .graphics
-            .storage_limit
+            .decode_limit(&command)
             .checked_mul(4)
             .and_then(|limit| limit.checked_div(3))
             .and_then(|limit| limit.checked_add(4))
@@ -808,6 +807,14 @@ impl<T> Term<T> {
     /// Options required to process a deferred graphics command outside the terminal lock.
     pub fn graphics_processing_options(&self) -> (usize, bool) {
         (self.config.graphics.storage_limit, self.config.graphics.local_transmission)
+    }
+
+    pub fn graphics_processing_options_for(&self, request: &GraphicsRequest) -> (usize, bool) {
+        let storage_limit =
+            request.command().map_or(self.config.graphics.storage_limit, |command| {
+                self.graphics.decode_limit(command)
+            });
+        (storage_limit, self.config.graphics.local_transmission)
     }
 
     /// Commit a graphics command processed outside the terminal lock.
