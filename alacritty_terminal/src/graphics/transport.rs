@@ -264,6 +264,58 @@ mod tests {
         assert_eq!(unsafe { libc::shm_open(c_name.as_ptr(), libc::O_RDONLY, 0) }, -1);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn rejects_short_shared_memory_ranges() {
+        use std::ffi::CString;
+        use std::os::fd::FromRawFd;
+
+        let name = format!("/alacritty-kitty-short-test-{}", std::process::id());
+        let c_name = CString::new(name.as_bytes()).unwrap();
+        let descriptor = unsafe {
+            libc::shm_open(c_name.as_ptr(), libc::O_CREAT | libc::O_EXCL | libc::O_RDWR, 0o600)
+        };
+        assert!(descriptor >= 0);
+        let mut file = unsafe { File::from_raw_fd(descriptor) };
+        file.write_all(&[1, 2]).unwrap();
+        drop(file);
+        let command = Command {
+            payload: Base64.encode(name.as_bytes()).into_bytes(),
+            data_size: Some(4),
+            ..Default::default()
+        };
+        assert_eq!(
+            load_transport(Transmission::SharedMemory, &command, 4),
+            Err(GraphicsError::NoData)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn follows_symlinks_to_regular_files() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("target");
+        let link = directory.path().join("link");
+        fs::write(&target, [1, 2, 3, 4]).unwrap();
+        symlink(&target, &link).unwrap();
+        assert_eq!(load_transport(Transmission::File, &command(&link), 4).unwrap(), [1, 2, 3, 4]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_symlink_loops() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir().unwrap();
+        let first = directory.path().join("first");
+        let second = directory.path().join("second");
+        symlink(&second, &first).unwrap();
+        symlink(&first, &second).unwrap();
+        assert_eq!(load_transport(Transmission::File, &command(&first), 4), Err(GraphicsError::Io));
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn rejects_symlinks_to_proc_files_after_open() {

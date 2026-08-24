@@ -327,6 +327,24 @@ mod tests {
     }
 
     #[test]
+    fn local_transport_gate_never_blocks_direct_payloads() {
+        let direct = direct(Format::Rgba, 1, 1, &[1, 2, 3, 4]);
+        assert!(matches!(process_command(Ok(direct), 4, false), ProcessedCommand::Decoded { .. }));
+        let file = Command {
+            transmission: Some(Transmission::File),
+            format: Some(Format::Rgba),
+            width: Some(1),
+            height: Some(1),
+            payload: Base64.encode("/tmp/image").into_bytes(),
+            ..Default::default()
+        };
+        assert!(matches!(process_command(Ok(file), 4, false), ProcessedCommand::Error {
+            error: GraphicsError::LocalTransmissionDisabled,
+            ..
+        }));
+    }
+
+    #[test]
     fn converts_rgb_to_canonical_rgba() {
         let image = decoded(direct(Format::Rgb, 2, 1, &[1, 2, 3, 4, 5, 6]), 8).unwrap();
         assert_eq!(image.bytes(), &[1, 2, 3, 255, 4, 5, 6, 255]);
@@ -432,10 +450,14 @@ mod tests {
     }
 
     #[test]
-    fn decodes_interlaced_palette_png_fixture() {
-        let source = include_bytes!("../../tests/fixtures/kitty/interlaced.png");
-        let decoded = decode_png(source, 16).unwrap();
-        assert_eq!((decoded.width(), decoded.height(), decoded.storage_bytes()), (2, 2, 16));
+    fn decodes_interlaced_png_fixtures() {
+        for source in [
+            include_bytes!("../../tests/fixtures/kitty/interlaced.png").as_slice(),
+            include_bytes!("../../tests/fixtures/kitty/interlaced-rgb.png").as_slice(),
+        ] {
+            let decoded = decode_png(source, 16).unwrap();
+            assert_eq!((decoded.width(), decoded.height(), decoded.storage_bytes()), (2, 2, 16));
+        }
     }
 
     #[test]
