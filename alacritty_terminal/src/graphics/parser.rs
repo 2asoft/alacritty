@@ -3,7 +3,8 @@ use std::{mem, str};
 use crate::index::Point;
 
 pub const MAX_GRAPHICS_CONTROL_BYTES: usize = 4096;
-pub const MAX_GRAPHICS_PAYLOAD_BYTES: usize = 4096;
+// Kitty's current graphics client uses 128 KiB chunks despite the protocol's 4 KiB guidance.
+pub const MAX_GRAPHICS_PAYLOAD_BYTES: usize = 128 * 1024;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Action {
@@ -393,13 +394,15 @@ mod tests {
     }
 
     #[test]
-    fn bounds_control_and_payload_independently() {
+    fn bounds_control_and_accepts_kitty_client_payload_chunks() {
         let mut control = vec![b'G'];
         control.extend([b'i'; MAX_GRAPHICS_CONTROL_BYTES + 1]);
         assert_eq!(parse(&control), Some(Err(GraphicsError::ControlTooLarge)));
 
         let mut payload = b"G;".to_vec();
-        payload.extend([b'A'; MAX_GRAPHICS_PAYLOAD_BYTES + 1]);
+        payload.extend([b'A'; 128 * 1024]);
+        assert_eq!(parse(&payload).unwrap().unwrap().payload.len(), 128 * 1024);
+        payload.push(b'A');
         assert_eq!(parse(&payload), Some(Err(GraphicsError::PayloadTooLarge)));
     }
 

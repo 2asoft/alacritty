@@ -2,7 +2,7 @@ use std::io::Cursor;
 use std::sync::Arc;
 
 use base64::Engine;
-use base64::engine::general_purpose::STANDARD as Base64;
+use base64::engine::general_purpose::{STANDARD as Base64, STANDARD_NO_PAD as Base64Unpadded};
 use miniz_oxide::inflate::decompress_to_vec_zlib_with_limit;
 use png::{ColorType, Decoder, Limits, Transformations};
 
@@ -107,7 +107,10 @@ pub fn process_command(
     }
 
     let source = match command.transmission.unwrap_or_default() {
-        Transmission::Direct => Base64.decode(&command.payload).map_err(|_| GraphicsError::Decode),
+        Transmission::Direct => Base64
+            .decode(&command.payload)
+            .or_else(|_| Base64Unpadded.decode(&command.payload))
+            .map_err(|_| GraphicsError::Decode),
         _ if !local_transmission => Err(GraphicsError::LocalTransmissionDisabled),
         transmission => load_transport(transmission, &command, storage_limit),
     };
@@ -353,6 +356,14 @@ mod tests {
     #[test]
     fn preserves_rgba() {
         let image = decoded(direct(Format::Rgba, 1, 1, &[1, 2, 3, 4]), 4).unwrap();
+        assert_eq!(image.bytes(), &[1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn accepts_unpadded_base64_from_kitty_clients() {
+        let mut command = direct(Format::Rgba, 1, 1, &[1, 2, 3, 4]);
+        command.payload.truncate(command.payload.len() - 2);
+        let image = decoded(command, 4).unwrap();
         assert_eq!(image.bytes(), &[1, 2, 3, 4]);
     }
 

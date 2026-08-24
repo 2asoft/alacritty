@@ -83,10 +83,12 @@ pub enum PendingResult {
 
 impl Command {
     fn is_valid_continuation(&self, initial_action: Option<Action>) -> bool {
-        let valid_action = matches!(
-            (initial_action, self.action),
-            (Some(Action::TransmitFrame), Some(Action::TransmitFrame)) | (_, None)
-        );
+        let valid_action = self.action.is_none()
+            || self.action == initial_action
+                && matches!(
+                    initial_action,
+                    Some(Action::Transmit | Action::TransmitAndPlace | Action::TransmitFrame)
+                );
         valid_action
             && self.format.is_none()
             && self.transmission.is_none()
@@ -182,32 +184,37 @@ mod tests {
     }
 
     #[test]
-    fn animation_chunks_accept_kitty_and_explicit_frame_continuations() {
-        for action in [None, Some(Action::TransmitFrame)] {
-            let first = Command {
-                action: Some(Action::TransmitFrame),
-                image_id: Some(1),
-                more: Some(true),
-                quiet: Some(0),
-                payload: b"AAAA".to_vec(),
-                ..Default::default()
-            };
-            let continuation = Command {
-                action,
-                more: Some(false),
-                quiet: Some(1),
-                payload: b"AAAA".to_vec(),
-                ..Default::default()
-            };
-            let pending = PendingTransmission::start(first, 100).unwrap();
-            let PendingResult::Complete(GraphicsRequest::Chunked { command, .. }) =
-                pending.push(continuation, 100).unwrap()
-            else {
-                panic!("expected complete frame transmission");
-            };
-            assert_eq!(command.action, Some(Action::TransmitFrame));
-            assert_eq!(command.image_id, Some(1));
-            assert_eq!(command.quiet, Some(1));
+    fn chunks_accept_kitty_action_repetition() {
+        for (initial_action, continuation_actions) in [
+            (Action::TransmitFrame, [None, Some(Action::TransmitFrame)]),
+            (Action::TransmitAndPlace, [None, Some(Action::TransmitAndPlace)]),
+        ] {
+            for action in continuation_actions {
+                let first = Command {
+                    action: Some(initial_action),
+                    image_id: Some(1),
+                    more: Some(true),
+                    quiet: Some(0),
+                    payload: b"AAAA".to_vec(),
+                    ..Default::default()
+                };
+                let continuation = Command {
+                    action,
+                    more: Some(false),
+                    quiet: Some(1),
+                    payload: b"AAAA".to_vec(),
+                    ..Default::default()
+                };
+                let pending = PendingTransmission::start(first, 100).unwrap();
+                let PendingResult::Complete(GraphicsRequest::Chunked { command, .. }) =
+                    pending.push(continuation, 100).unwrap()
+                else {
+                    panic!("expected complete transmission");
+                };
+                assert_eq!(command.action, Some(initial_action));
+                assert_eq!(command.image_id, Some(1));
+                assert_eq!(command.quiet, Some(1));
+            }
         }
     }
 
