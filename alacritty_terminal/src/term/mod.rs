@@ -937,7 +937,11 @@ impl<T> Term<T> {
         &mut self,
         now: std::time::Instant,
     ) -> Option<std::time::Duration> {
-        self.graphics.advance_animations(now).0
+        let (deadline, changed) = self.graphics.advance_animations(now);
+        if changed {
+            self.mark_fully_damaged();
+        }
+        deadline
     }
 
     /// Graphics state paired with the active grid.
@@ -2937,6 +2941,40 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Default)]
+    struct GeometryListener(Arc<Mutex<Vec<String>>>);
+
+    impl EventListener for GeometryListener {
+        fn send_event(&self, event: Event) {
+            let response = match event {
+                Event::PtyWrite(response) => Some(response),
+                Event::TextAreaSizeRequest(request) => Some(request(crate::event::WindowSize {
+                    num_lines: 10,
+                    num_cols: 5,
+                    cell_width: 8,
+                    cell_height: 16,
+                })),
+                _ => None,
+            };
+            if let Some(response) = response {
+                self.0.lock().unwrap().push(response);
+            }
+        }
+    }
+
+    #[test]
+    fn graphics_geometry_queries_report_pixels_and_cells() {
+        let size = TermSize::new(5, 10);
+        let listener = GeometryListener::default();
+        let responses = listener.0.clone();
+        let mut term = Term::new(Config::default(), &size, listener);
+
+        term.text_area_size_pixels();
+        term.text_area_size_chars();
+
+        assert_eq!(responses.lock().unwrap().as_slice(), ["\x1b[4;160;40t", "\x1b[8;10;5t"]);
+    }
+
     #[test]
     fn malformed_kitty_command_returns_bounded_error() {
         let size = TermSize::new(5, 10);
@@ -3008,6 +3046,18 @@ mod tests {
         });
 
         assert_eq!(responses.lock().unwrap().as_slice(), ["\x1b_Gi=1,r=2;OK\x1b\\"]);
+        responses.lock().unwrap().clear();
+
+        let mut parser = ansi::Processor::<ansi::StdSyncHandler>::new();
+        parser.advance(&mut term, b"\x1b_Ga=f,i=1,f=32,s=1,v=1,m=1;BQYH\x1b\\");
+        assert!(term.take_graphics_request().is_none());
+        parser.advance(&mut term, b"\x1b_Gm=0;CA==\x1b\\");
+        let request = term.take_graphics_request().unwrap();
+        let options = term.graphics_processing_options_for(&request);
+        term.commit_graphics_command(crate::graphics::process_request(
+            request, options.0, options.1,
+        ));
+        assert_eq!(responses.lock().unwrap().as_slice(), ["\x1b_Gi=1,r=3;OK\x1b\\"]);
     }
 
     #[test]
@@ -3131,9 +3181,94 @@ mod tests {
             placement_id: Some(8),
             ..Default::default()
         }));
-        let responses = responses.lock().unwrap();
-        assert_eq!(responses[responses.len() - 2], "\x1b_Gi=31,p=7;OK\x1b\\");
-        assert_eq!(responses[responses.len() - 1], "\x1b_Gi=404,p=8;ENOENT\x1b\\");
+        let recorded = responses.lock().unwrap();
+        assert_eq!(recorded[recorded.len() - 2], "\x1b_Gi=31,p=7;OK\x1b\\");
+        assert_eq!(recorded[recorded.len() - 1], "\x1b_Gi=404,p=8;ENOENT\x1b\\");
+        let response_count = recorded.len();
+        drop(recorded);
+
+        term.commit_graphics_command(ProcessedCommand::Decoded {
+            command: GraphicsCommand::default(),
+            image: crate::graphics::PixelBuffer::from_rgba(1, 1, Arc::from([1, 1, 1, 1])),
+        });
+        assert_eq!(responses.lock().unwrap().len(), response_count);
+
+        term.commit_graphics_command(crate::graphics::process_command(
+            Ok(GraphicsCommand { image_id: Some(1), image_number: Some(2), ..Default::default() }),
+            4,
+            true,
+        ));
+        assert_eq!(responses.lock().unwrap().last().unwrap(), "\x1b_Gi=1,I=2;EINVAL\x1b\\");
+    }
+
+    #[test]
+    fn relative_placement_errors_are_reported_on_the_wire() {
+        let size = TermSize::new(5, 10);
+        let listener = RecordingListener::default();
+        let responses = listener.0.clone();
+        let mut term = Term::new(Config::default(), &size, listener);
+        let image = GraphicsCommand { image_id: Some(1), ..Default::default() };
+        term.graphics
+            .store(&image, crate::graphics::PixelBuffer::from_rgba(1, 1, Arc::from([1, 2, 3, 4])))
+            .unwrap();
+        term.graphics
+            .place(&GraphicsCommand { placement_id: Some(1), ..image.clone() }, Point::default())
+            .unwrap();
+
+        term.commit_graphics_command(ProcessedCommand::Metadata(GraphicsCommand {
+            action: Some(GraphicsAction::Place),
+            image_id: Some(1),
+            placement_id: Some(20),
+            parent_image_id: Some(99),
+            parent_placement_id: Some(1),
+            ..Default::default()
+        }));
+        term.commit_graphics_command(ProcessedCommand::Metadata(GraphicsCommand {
+            action: Some(GraphicsAction::Place),
+            image_id: Some(1),
+            placement_id: Some(21),
+            parent_image_id: Some(1),
+            parent_placement_id: Some(1),
+            unicode_placeholder: Some(1),
+            ..Default::default()
+        }));
+        for placement_id in 2..=9 {
+            term.graphics
+                .place(
+                    &GraphicsCommand {
+                        image_id: Some(1),
+                        placement_id: Some(placement_id),
+                        parent_image_id: Some(1),
+                        parent_placement_id: Some(placement_id - 1),
+                        ..Default::default()
+                    },
+                    Point::default(),
+                )
+                .unwrap();
+        }
+        term.commit_graphics_command(ProcessedCommand::Metadata(GraphicsCommand {
+            action: Some(GraphicsAction::Place),
+            image_id: Some(1),
+            placement_id: Some(10),
+            parent_image_id: Some(1),
+            parent_placement_id: Some(9),
+            ..Default::default()
+        }));
+        term.commit_graphics_command(ProcessedCommand::Metadata(GraphicsCommand {
+            action: Some(GraphicsAction::Place),
+            image_id: Some(1),
+            placement_id: Some(1),
+            parent_image_id: Some(1),
+            parent_placement_id: Some(9),
+            ..Default::default()
+        }));
+
+        assert_eq!(responses.lock().unwrap().as_slice(), [
+            "\x1b_Gi=1,p=20;ENOPARENT\x1b\\",
+            "\x1b_Gi=1,p=21;EINVAL\x1b\\",
+            "\x1b_Gi=1,p=10;ETOODEEP\x1b\\",
+            "\x1b_Gi=1,p=1;ECYCLE\x1b\\",
+        ]);
     }
 
     #[test]
@@ -3296,13 +3431,17 @@ mod tests {
         let config = Config { graphics: GraphicsConfig::default(), ..Default::default() };
         let mut term = Term::new(config, &size, VoidListener);
         let mut parser = ansi::Processor::<ansi::StdSyncHandler>::new();
-        let input = b"\x1b_Gt=f,m=1,i=1;L3RtcC9pbWFnZQ==\x1b\\";
-        let _consumed = parser.advance_until_terminated(&mut term, input);
-
-        assert!(matches!(
-            term.take_graphics_request(),
-            Some(crate::graphics::GraphicsRequest::Command(Ok(_)))
-        ));
+        for input in [
+            b"\x1b_Gt=f,m=1,i=1;L3RtcC9pbWFnZQ==\x1b\\".as_slice(),
+            b"\x1b_Gt=t,m=1,i=1;L3RtcC9pbWFnZQ==\x1b\\".as_slice(),
+            b"\x1b_Gt=s,m=1,i=1;L2ltYWdl\x1b\\".as_slice(),
+        ] {
+            let _consumed = parser.advance_until_terminated(&mut term, input);
+            assert!(matches!(
+                term.take_graphics_request(),
+                Some(crate::graphics::GraphicsRequest::Command(Ok(_)))
+            ));
+        }
     }
 
     #[test]
@@ -3330,10 +3469,12 @@ mod tests {
     #[test]
     fn kitty_chunking_uses_final_cursor_and_delete_aborts_pending_upload() {
         let size = TermSize::new(10, 10);
-        let mut term = Term::new(Config::default(), &size, VoidListener);
+        let listener = RecordingListener::default();
+        let responses = listener.0.clone();
+        let mut term = Term::new(Config::default(), &size, listener);
         let mut parser = ansi::Processor::<ansi::StdSyncHandler>::new();
 
-        parser.advance(&mut term, b"\x1b_Ga=T,i=1,f=32,s=1,v=1,m=1;AQID\x1b\\");
+        parser.advance(&mut term, b"\x1b_Ga=T,i=1,f=32,s=1,v=1,m=1,q=2;AQID\x1b\\");
         assert!(term.take_graphics_request().is_none());
         term.goto(4, 5);
         parser.advance(&mut term, b"\x1b_Gm=0;BA==\x1b\\");
@@ -3348,17 +3489,27 @@ mod tests {
             Point::new(Line(4), Column(5))
         );
 
-        parser.advance(&mut term, b"\x1b_Gi=2,f=32,s=1,v=1,m=1;AQID\x1b\\");
+        parser.advance(&mut term, b"\x1b_Gi=2,f=32,s=1,v=1,m=1,q=2;AQID\x1b\\");
         assert!(term.take_graphics_request().is_none());
         parser.advance(&mut term, b"\x1b_Ga=d\x1b\\");
         assert!(matches!(term.take_graphics_request(), Some(GraphicsRequest::Command(Ok(_)))));
-        parser.advance(&mut term, b"\x1b_Gi=2,f=32,s=1,v=1;AQIDBA==\x1b\\");
+        parser.advance(&mut term, b"\x1b_Gi=2,f=32,s=1,v=1,q=2;AQIDBA==\x1b\\");
         let request = term.take_graphics_request().unwrap();
         let options = term.graphics_processing_options_for(&request);
         term.commit_graphics_command(crate::graphics::process_request(
             request, options.0, options.1,
         ));
         assert!(term.graphics.image_by_id(NonZeroU32::new(2).unwrap()).is_some());
+
+        parser.advance(&mut term, b"\x1b_Gi=41,p=7,f=32,s=1,v=1,m=1;AQID\x1b\\");
+        assert!(term.take_graphics_request().is_none());
+        parser.advance(&mut term, b"\x1b_Gm=0;\x1b\\");
+        let request = term.take_graphics_request().unwrap();
+        let options = term.graphics_processing_options_for(&request);
+        term.commit_graphics_command(crate::graphics::process_request(
+            request, options.0, options.1,
+        ));
+        assert_eq!(responses.lock().unwrap().as_slice(), ["\x1b_Gi=41,p=7;ENODATA\x1b\\"]);
     }
 
     #[test]
