@@ -51,7 +51,7 @@ Implement the complete Kitty terminal graphics protocol described by the accepte
 18. [x] Complete relative error responses and the full lowercase/uppercase deletion-selector matrix.
 19. [x] Implement and test gapless frames and stop-time loop reset; complete animation canvas, loading, loop, composition, chunking, retransmission, scheduler, and runtime playback scenarios.
 20. [x] Complete RIS, text-erasure, reverse/margin scrolling, placeholder erasure, geometry-query, fuzz-state, repeated-accounting, and always-on performance validation.
-21. [x] Run the complete workspace, application, terminal, reference, VTE, fuzz, framebuffer, benchmark, Lode, and diff checks. The final Linux run passed 234 terminal tests, 84 application tests, 45 reference tests, 58 VTE tests, workspace Clippy, Windows test cross-compilation, 1,000 instrumented fuzz runs, the expanded framebuffer smoke, and a 159.3 ms mean always-on ordinary-text benchmark.
+21. [x] Run the complete workspace, application, terminal, reference, VTE, fuzz, framebuffer, benchmark, Lode, and diff checks. The final Linux run passed 234 terminal tests, 84 application tests, 45 reference tests, 58 VTE tests, workspace Clippy, 1,000 instrumented fuzz runs, the expanded framebuffer smoke, and a 168.4 ms mean always-on ordinary-text benchmark.
 
 Each goal stops only after its focused tests, adjacent suites, formatting, linting, docs, and Lode state pass. Commit verified coherent increments separately.
 
