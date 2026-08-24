@@ -23,7 +23,7 @@ Status meanings:
 | Requirement | Status |
 | --- | --- |
 | APC starts, terminates with 7-bit and 8-bit ST, cancels with CAN/SUB, preserves the following input suffix, and does not change PM/SOS behavior | Covered |
-| APC control and payload storage are independently bounded across arbitrary input splits | Covered |
+| APC control and payload storage are independently bounded across arbitrary input splits; payloads accept Kitty's bounded 128 KiB client chunks | Covered |
 | Unknown keys are ignored, the final duplicate key wins, integer domains are enforced, and all action-specific permissive flag values match Kitty | Covered |
 | Default `a=t`, `f=32`, `t=d`, `q=0`, `m=0`, and display/frame defaults produce the documented semantics | Covered |
 | A query response is ordered before a later DA response | Covered |
@@ -50,11 +50,11 @@ Status meanings:
 | Requirement | Status |
 | --- | --- |
 | Direct transmission supports complete and chunked RGB, RGBA, PNG, and zlib payloads | Covered |
-| Non-final chunks have valid base64 boundaries and total assembled data remains bounded | Covered |
+| Non-final chunks have valid base64 boundaries, padded and unpadded base64 are accepted, and total assembled data remains bounded | Covered |
 | Final-chunk cursor position anchors transmit-and-place | Covered |
 | Any delete command aborts an incomplete upload, and the next upload starts cleanly | Covered |
 | Chunk success, decode failure, continuation failure, and changing quiet levels preserve initial request identity | Covered |
-| Animation frame chunks accept Kitty-compatible `m`-only continuations and explicit `a=f` continuations | Covered |
+| Direct chunks accept `m`-only continuations and Kitty's repeated `a=t`, `a=T`, and `a=f` continuation actions | Covered |
 | File and shared-memory transports ignore the direct-only `m` flag | Covered |
 | File and shared-memory `S`/`O` ranges accept exact ranges and reject short or overflowing ranges with request identity | Covered |
 | Regular files and safe symlinks are read; symlink loops and every special-file class fail without blocking | Covered |
@@ -74,8 +74,8 @@ Status meanings:
 | Failed or incomplete replacement preserves the old image and placements atomically | Covered, policy extension |
 | Same nonzero `(i,p)` replaces a placement without duplication or flicker | Covered |
 | `p` is ignored for image ID zero; repeated zero placement IDs remain independent | Covered |
-| Image bytes, animation bytes, image count, placement count, frame count, and pending reservations are bounded | Covered |
-| Eviction is deterministic and prioritizes transient, unplaced, and non-visible images as documented | Covered |
+| Canonical image bytes, animation bytes, image count, placement count, and frame count stay within storage quota; one deferred decode working buffer is separately bounded by the same limit | Covered |
+| Eviction is deterministic, prioritizes transient, unplaced, and non-visible images, and remains reachable when decoding a new ID at full storage quota | Covered |
 | Frame-level transient hints are accepted but intentionally ignored because frames share canonical in-memory image ownership | Policy |
 | Usage hints on placement commands do not mutate stored image policy | Covered |
 | Replacement remains possible at metadata and byte limits without temporary double accounting | Covered |
@@ -186,9 +186,10 @@ Status meanings:
 - overlapping translucent images use source-over composition;
 - transparent Unicode placeholders expose their cell background without exposing the placeholder glyph;
 - automatic animation and client-selected frames both reach the framebuffer;
+- Kitty 0.48.2 `kitten icat` loads and plays a 645-frame GIF using 128 KiB chunks and unpadded base64;
 - animation transitions damage their placement and trigger visible redraws;
 - texture eviction stays within the configured byte limit;
 - discarded image textures reconstruct from canonical CPU pixels;
 - image passes leave later text rendering stable.
 
-Real-application review uses `treemd` with transparent PNGs and Unicode placeholders. Kitty serves as the comparison terminal with matched window, font, and color configuration where geometry matters.
+Real-application review uses `treemd` with transparent PNGs, Unicode placeholders, and modal GIF playback. Kitty serves as the comparison terminal with matched window, font, and color configuration where geometry matters. Treemd's software GIF path creates a new virtual image ID for every frame and does not delete stale image data; under sustained quota pressure this can evict IDs that Treemd later reuses through retained placeholders. Native terminal animation is therefore the acceptance boundary for Alacritty animation, while Treemd's unique-ID software playback remains client-owned behavior.

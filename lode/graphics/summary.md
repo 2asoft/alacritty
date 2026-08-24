@@ -21,7 +21,7 @@ Kitty graphics support is always available. `[terminal.graphics]` controls resou
 
 - Every placement references a live image.
 - Named image and placement indexes are unique where protocol IDs require uniqueness.
-- Pixel reservations and retained bytes never exceed the configured screen-buffer quota.
+- Canonical retained pixels never exceed the configured screen-buffer quota. One deferred decode working buffer is separately bounded by that quota so validated new IDs can trigger atomic commit-time eviction.
 - Tracked anchors either identify retained logical content or invalidate their placements.
 - Relative placement graphs are acyclic, depth-bounded, and free of dangling parents.
 - Image replacement is atomic.

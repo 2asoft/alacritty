@@ -228,7 +228,7 @@ Default:
 
 This is intentionally comparable to the storage budget described by the Kitty protocol documentation. citeturn575486view6
 
-This budget counts canonical image/frame pixel storage and pending reservations. GPU texture memory is separately managed as a renderer cache.
+This budget counts canonical stored image/frame pixels. A deferred decode may use one additional working buffer bounded by the same limit so a new image can be validated before atomic commit evicts old data. Canonical storage remains within quota, and peak CPU pixel memory remains bounded by stored quota plus one decode working buffer. GPU texture memory is separately managed as a renderer cache.
 
 ### `local_transmission`
 
@@ -632,9 +632,9 @@ Exceeding the bound places the APC parser in `Overflow`; it consumes until termi
 
 ### Payload-size limits
 
-For direct protocol chunks, the encoded payload MUST obey the protocol chunk-size requirement.
+The published protocol guides clients to 4 KiB direct chunks. Kitty 0.48.2's own graphics client emits chunks up to 128 KiB and omits optional base64 padding. Alacritty accepts this bounded implementation behavior for interoperability while retaining 4 KiB control data, total transaction, decoded-byte, metadata, and storage limits.
 
-The implementation MUST enforce this before append/copy operations.
+The implementation MUST reject encoded chunks larger than 128 KiB before append/copy operations and accept both canonical padded base64 and Kitty's unpadded form.
 
 This is important because a 2026 Kitty security advisory involved insufficient capacity handling while appending direct graphics data, demonstrating that graphics input must be treated as hostile even when chunking appears bounded. citeturn575486view8
 
@@ -1091,7 +1091,6 @@ Conceptually:
 struct PendingTransmission {
     command: TransmissionHeader,
     encoded: Vec<u8>,
-    reserved_bytes: usize,
     pending_anchor: Option<TrackedAnchor>,
 }
 ```
@@ -1102,7 +1101,7 @@ Actual implementation SHOULD decode base64 incrementally rather than retaining a
 
 A new incompatible graphics operation encountered while a chunked transfer is incomplete is handled according to protocol requirements rather than silently merging state.
 
-Deletion that aborts an incomplete transfer clears pending storage and reservation.
+Deletion that aborts an incomplete transfer clears pending encoded storage and its tracked anchor.
 
 ### Failure
 
@@ -1916,10 +1915,9 @@ Quota accounting includes:
 
 - canonical root image pixels;
 - canonical animation frame pixels;
-- pending decoded-pixel reservations;
 - buffers equivalent to retained image content.
 
-Temporary decode scratch SHOULD be minimized and separately bounded so peak memory cannot become an uncontrolled multiple of the configured quota.
+One deferred decode working buffer is separately bounded by the configured quota. It allows a validated new image to reach the atomic commit that evicts old data. Temporary decode scratch SHOULD be minimized and separately bounded so peak memory cannot exceed canonical storage plus one quota-sized decode buffer and bounded decoder overhead.
 
 ### Not counted
 
@@ -2265,7 +2263,7 @@ Hard reset clears:
 - virtual placements;
 - relative graph;
 - pending transmissions;
-- reservations;
+- decode working state;
 - animation state;
 - renderer-visible graphics generation.
 
@@ -2473,8 +2471,9 @@ Cover:
 - unsigned overflow;
 - missing `=`;
 - extra separators;
-- 4 KiB boundary;
-- over-limit control data;
+- 4 KiB control boundary;
+- 128 KiB Kitty-client payload boundary;
+- over-limit control and payload data;
 - invalid enum values.
 
 ### 44.3 Direct transfer tests
@@ -2841,7 +2840,7 @@ Exercise:
 - new image;
 - replacement;
 - animation frame;
-- pending reservation;
+- full-quota decode followed by commit-time eviction;
 - transient eviction;
 - unplaced eviction;
 - offscreen eviction;
@@ -2980,7 +2979,7 @@ No graphics rendering yet.
 - image IDs;
 - image numbers;
 - queries;
-- quota/reservations.
+- quota, bounded decode working memory, and commit-time eviction.
 
 ### Phase 4 — classic placements
 
@@ -3649,7 +3648,7 @@ Before considering graphics complete:
 - [x] Shared-memory lifetime cleaned correctly.
 - [x] No heavyweight IO/decode occurs under `Term` lock.
 - [x] Replacement atomic.
-- [x] Parser cancellation releases reservation.
+- [x] Parser cancellation releases pending encoded and decode working memory.
 - [x] Graphics payload never logged.
 - [x] Error messages bounded.
 - [x] Renderer texture dimensions checked.
