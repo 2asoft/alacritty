@@ -249,6 +249,10 @@ pub(super) struct ImageRenderer {
     texture_bytes: usize,
     usage_clock: u64,
     maximum_texture_size: u32,
+    #[cfg(debug_assertions)]
+    test_discarded: bool,
+    #[cfg(debug_assertions)]
+    test_evictions: usize,
 }
 
 impl ImageRenderer {
@@ -290,7 +294,14 @@ impl ImageRenderer {
         let mut maximum_texture_size = 0;
         // SAFETY: A current GL context exists and the output points to valid writable storage.
         unsafe { gl::GetIntegerv(gl::MAX_TEXTURE_SIZE, &mut maximum_texture_size) };
-        let maximum_texture_size = u32::try_from(maximum_texture_size).unwrap_or(1).clamp(1, 8192);
+        let mut maximum_texture_size =
+            u32::try_from(maximum_texture_size).unwrap_or(1).clamp(1, 8192);
+        #[cfg(debug_assertions)]
+        if let Some(limit) = std::env::var_os("ALACRITTY_TEST_MAX_TEXTURE_SIZE")
+            .and_then(|limit| limit.to_string_lossy().parse::<u32>().ok())
+        {
+            maximum_texture_size = maximum_texture_size.min(limit.max(1));
+        }
 
         Ok(Self {
             program,
@@ -301,6 +312,10 @@ impl ImageRenderer {
             texture_bytes: 0,
             usage_clock: 0,
             maximum_texture_size,
+            #[cfg(debug_assertions)]
+            test_discarded: false,
+            #[cfg(debug_assertions)]
+            test_evictions: 0,
         })
     }
 
@@ -311,9 +326,13 @@ impl ImageRenderer {
         cache_limit: usize,
     ) {
         #[cfg(debug_assertions)]
-        if std::env::var_os("ALACRITTY_TEST_DISCARD_IMAGE_TEXTURES").is_some() {
-            self.textures.clear();
-            self.texture_bytes = 0;
+        if let Some(mode) = std::env::var_os("ALACRITTY_TEST_DISCARD_IMAGE_TEXTURES") {
+            let discard = mode != "once" || self.usage_clock > 0 && !self.test_discarded;
+            if discard {
+                self.textures.clear();
+                self.texture_bytes = 0;
+                self.test_discarded = true;
+            }
         }
         self.evict_for(0, cache_limit);
         if images.is_empty() || viewport.clip_width <= 0. || viewport.clip_height <= 0. {
@@ -419,6 +438,14 @@ impl ImageRenderer {
             for (texture, region) in tiles {
                 self.draw_tile(viewport.width, viewport.height, image, texture, region);
             }
+        }
+
+        #[cfg(debug_assertions)]
+        if let Some(path) = std::env::var_os("ALACRITTY_TEST_IMAGE_CACHE_FILE") {
+            let _ = std::fs::write(
+                path,
+                format!("{} {} {}\n", self.texture_bytes, self.textures.len(), self.test_evictions),
+            );
         }
 
         // SAFETY: Restoring the captured state, including viewport, keeps other renderers' binding
@@ -558,6 +585,10 @@ impl ImageRenderer {
             };
             if let Some(cached) = self.textures.remove(&candidate) {
                 self.texture_bytes = self.texture_bytes.saturating_sub(cached.bytes);
+                #[cfg(debug_assertions)]
+                {
+                    self.test_evictions = self.test_evictions.saturating_add(1);
+                }
             }
         }
     }

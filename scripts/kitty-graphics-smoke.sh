@@ -25,22 +25,54 @@ import base64
 import sys
 from pathlib import Path
 
-pixel = base64.b64encode(bytes([255, 0, 0, 255])).decode("ascii")
-transparent = base64.b64encode(bytes([0, 255, 255, 0])).decode("ascii")
+def encoded(*rgba):
+    return base64.b64encode(bytes(rgba)).decode("ascii")
+
+red = encoded(255, 0, 0, 255)
+green = encoded(0, 255, 0, 255)
+transparent = encoded(0, 255, 255, 0)
+crop = encoded(255, 0, 0, 255, 0, 255, 0, 255)
+very_negative = encoded(68, 85, 102, 255)
+normal_negative = encoded(119, 136, 153, 255)
+positive = encoded(171, 205, 239, 255)
+half_red = encoded(255, 0, 0, 128)
+half_blue = encoded(0, 0, 255, 128)
+cyan = encoded(0, 255, 255, 255)
+yellow = encoded(255, 255, 0, 255)
+tiled = encoded(*(200, 10, 200, 255) * 4)
 placeholder = "\U0010eeee\u0305"
+client_frame_marker = str(Path(sys.argv[1]).with_name("client-frame-ready"))
 script = (
     "printf 'Thin text must remain stable across redraws\\nSecond line 0123456789'; "
-    f"printf '\\033_Ga=t,q=2,f=32,s=1,v=1,i=1;{pixel}\\033\\\\'; "
+    f"printf '\\033_Ga=t,q=2,f=32,s=1,v=1,i=1;{red}\\033\\\\'; "
     "printf '\\033[5;1H\\033_Ga=p,q=2,i=1,c=4,r=4,z=-1,C=1\\033\\\\'; "
     f"printf '\\033_Ga=T,q=2,f=32,s=1,v=1,i=16711935,U=1,c=1,r=1;{transparent}\\033\\\\'; "
-    f"printf '\\033[10;1H\\033[38;2;255;0;255m{placeholder}\\033[0m\\033[20;20H'; "
-    "sleep 30"
+    f"printf '\\033[10;1H\\033[48;2;18;52;86m\\033[38;2;255;0;255m{placeholder}\\033[0m'; "
+    f"printf '\\033[12;1H\\033_Ga=T,q=2,f=32,s=2,v=1,i=2,x=1,w=1,c=4,r=2,C=1;{crop}\\033\\\\'; "
+    f"printf '\\033[15;1H\\033_Ga=T,q=2,f=32,s=1,v=1,i=4,c=4,r=2,z=-1073741825,C=1;{very_negative}\\033\\\\'; "
+    "printf '\\033[15;1H\\033[48;2;17;34;51m    \\033[16;1H    \\033[0m'; "
+    f"printf '\\033[17;1H\\033_Ga=T,q=2,f=32,s=1,v=1,i=5,c=4,r=2,z=-1,C=1;{normal_negative}\\033\\\\'; "
+    "printf '\\033[17;1H\\033[48;2;34;51;68m    \\033[18;1H    \\033[0m'; "
+    "printf '\\033[19;1HVISIBLE TEXT'; "
+    f"printf '\\033[19;1H\\033_Ga=T,q=2,f=32,s=1,v=1,i=6,c=4,r=2,z=1,C=1;{positive}\\033\\\\'; "
+    f"printf '\\033[21;1H\\033_Ga=T,q=2,f=32,s=1,v=1,i=7,c=4,r=2,C=1;{half_red}\\033\\\\'; "
+    f"printf '\\033[21;1H\\033_Ga=T,q=2,f=32,s=1,v=1,i=8,c=4,r=2,C=1;{half_blue}\\033\\\\'; "
+    f"printf '\\033[12;20H\\033_Ga=T,q=2,f=32,s=1,v=1,i=9,c=4,r=2,z=1,C=1;{cyan}\\033\\\\'; "
+    f"printf '\\033_Ga=f,q=2,f=32,s=1,v=1,i=9,z=500;{yellow}\\033\\\\'; "
+    "printf '\\033_Ga=a,q=2,i=9,r=1,z=500\\033\\\\'; "
+    "printf '\\033_Ga=a,q=2,i=9,s=3\\033\\\\'; "
+    f"printf '\\033[23;10H\\033_Ga=T,q=2,f=32,s=4,v=1,i=10,c=4,r=1,C=1;{tiled}\\033\\\\'; "
+    "printf '\\033[24;60H'; "
+    "sleep 10; "
+    "printf '\\033_Ga=a,q=2,i=9,s=1,c=2\\033\\\\'; "
+    f"touch '{client_frame_marker}'; sleep 25"
 )
 quoted = '"' + script.replace('\\', '\\\\').replace('"', '\\"') + '"'
 Path(sys.argv[1]).write_text(
     '[window]\n'
     'dimensions = { columns = 60, lines = 24 }\n'
     '[terminal.graphics]\n'
+    'storage_limit = 64\n'
     '[terminal.shell]\n'
     'program = "/bin/sh"\n'
     f'args = ["-c", {quoted}]\n',
@@ -74,7 +106,11 @@ done
 [ -n "$socket" ] && [ -n "$wayland" ] || { echo "headless sway did not start" >&2; exit 1; }
 
 XDG_RUNTIME_DIR="$runtime" SWAYSOCK="$socket" WAYLAND_DISPLAY="$wayland" \
-    ALACRITTY_TEST_DISCARD_IMAGE_TEXTURES=1 "$root/target/debug/alacritty" --config-file "$output/alacritty.toml" \
+    ALACRITTY_TEST_DISCARD_IMAGE_TEXTURES=once \
+    ALACRITTY_TEST_ANIMATION_STATE_FILE="$output/animation-state" \
+    ALACRITTY_TEST_IMAGE_CACHE_FILE="$output/image-cache" \
+    ALACRITTY_TEST_MAX_TEXTURE_SIZE=3 \
+    "$root/target/debug/alacritty" --config-file "$output/alacritty.toml" \
     >"$output/alacritty.log" 2>&1 &
 echo $! >"$output/alacritty.pid"
 
@@ -90,9 +126,34 @@ sleep 1
 for frame in 1 2 3 4; do
     XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY="$wayland" \
         grim "$output/frame-$frame.png"
-    magick "$output/frame-$frame.png" -crop 600x70+0+25 +repage "$output/text-$frame.png"
-    sleep 0.6
+    sleep 0.07
 done
+for frame in 1 2 3 4; do
+    magick "$output/frame-$frame.png" -crop 600x70+0+25 +repage "$output/text-$frame.png"
+done
+
+wait_animation_state() {
+    expected=$1
+    for _ in $(seq 1 200); do
+        [ "$(cat "$output/animation-state" 2>/dev/null || true)" = "$expected" ] && return 0
+        sleep 0.03
+    done
+    echo "animation did not reach frame $expected" >&2
+    return 1
+}
+wait_animation_state 1
+sleep 0.2
+XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY="$wayland" grim "$output/animation-frame.png"
+wait_animation_state 0
+sleep 0.2
+XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY="$wayland" grim "$output/animation-root.png"
+for _ in $(seq 1 400); do
+    [ -e "$output/client-frame-ready" ] && break
+    sleep 0.03
+done
+[ -e "$output/client-frame-ready" ] || { echo "client frame selection did not complete" >&2; exit 1; }
+sleep 0.2
+XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY="$wayland" grim "$output/client-frame.png"
 
 text_pixels=$(magick "$output/text-1.png" -format %c histogram:info:- \
     | awk '/#D8D8D8 / { gsub(":", "", $1); print $1 }')
@@ -112,6 +173,44 @@ red_pixels=$(magick "$output/frame-1.png" -format %c histogram:info:- \
     | awk '/#FF0000 / { gsub(":", "", $1); print $1 }')
 [ "${red_pixels:-0}" -ge 500 ] || {
     echo "expected rendered red image was missing from framebuffer" >&2
+    exit 1
+}
+
+for color in 123456 00FF00 112233 778899 ABCDEF; do
+    pixels=$(magick "$output/frame-1.png" -format %c histogram:info:- \
+        | awk -v color="#$color " 'index($0, color) { gsub(":", "", $1); print $1 }')
+    [ "${pixels:-0}" -ge 20 ] || {
+        echo "expected protocol framebuffer color #$color was missing" >&2
+        exit 1
+    }
+done
+
+alpha_pixels=$(magick "$output/frame-1.png" -format %c histogram:info:- \
+    | awk '/#460686 / { gsub(":", "", $1); print $1 }')
+[ "${alpha_pixels:-0}" -ge 500 ] || {
+    echo "overlapping translucent images did not use source-over composition" >&2
+    exit 1
+}
+
+very_negative_pixels=$(magick "$output/frame-1.png" -format %c histogram:info:- \
+    | awk '/#445566 / { gsub(":", "", $1); print $1 }')
+[ "${very_negative_pixels:-0}" -eq 0 ] || {
+    echo "very-negative image rendered above a non-default cell background" >&2
+    exit 1
+}
+
+magick "$output/animation-root.png" -format %c histogram:info:- | grep -q '#00FFFF ' || {
+    echo "animation root frame was missing from framebuffer" >&2
+    exit 1
+}
+magick "$output/animation-frame.png" -format %c histogram:info:- | grep -q '#FFFF00 ' || {
+    echo "animation second frame was missing from framebuffer" >&2
+    exit 1
+}
+
+read -r cache_bytes _ cache_evictions <"$output/image-cache"
+[ "$cache_bytes" -le 64 ] && [ "$cache_evictions" -gt 0 ] || {
+    echo "image cache did not remain bounded under animation churn" >&2
     exit 1
 }
 
