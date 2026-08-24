@@ -117,6 +117,20 @@ fn classic_dimensions(
     }
 }
 
+fn record_virtual_origin(
+    origins: &mut HashMap<(u32, u32), Point>,
+    identity: (u32, u32),
+    point: Point,
+) {
+    origins
+        .entry(identity)
+        .and_modify(|origin| {
+            origin.line = origin.line.min(point.line);
+            origin.column = origin.column.min(point.column);
+        })
+        .or_insert(point);
+}
+
 #[allow(clippy::too_many_arguments)]
 fn placeholder_geometry(
     source_x: u32,
@@ -920,13 +934,11 @@ impl Display {
                     continue;
                 };
                 previous = Some(placeholder);
-                virtual_origins
-                    .entry((placeholder.image_id, placeholder.placement_id))
-                    .and_modify(|origin| {
-                        origin.line = origin.line.min(point.line);
-                        origin.column = origin.column.min(point.column);
-                    })
-                    .or_insert(point);
+                record_virtual_origin(
+                    &mut virtual_origins,
+                    (placeholder.image_id, placeholder.placement_id),
+                    point,
+                );
             }
         }
         let renderables = if terminal.graphics().has_classic_placements() {
@@ -1955,6 +1967,14 @@ fn window_size(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn virtual_origin_uses_independent_minimum_row_and_column() {
+        let mut origins = HashMap::new();
+        record_virtual_origin(&mut origins, (1, 2), Point::new(Line(5), Column(1)));
+        record_virtual_origin(&mut origins, (1, 2), Point::new(Line(1), Column(5)));
+        assert_eq!(origins[&(1, 2)], Point::new(Line(1), Column(1)));
+    }
 
     #[test]
     fn placeholder_geometry_fits_and_centers_image_in_virtual_grid() {
