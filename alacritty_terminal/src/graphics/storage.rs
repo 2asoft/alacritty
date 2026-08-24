@@ -123,21 +123,8 @@ impl GraphicsState {
         self.visible_lines = Line(0)..Line(i32::try_from(screen_lines).unwrap_or(i32::MAX));
     }
 
-    pub fn decode_limit(&self, command: &Command) -> usize {
-        let available = self.storage_limit.saturating_sub(self.used_bytes);
-        let Some(handle) = self.command_image_handle(command).ok() else {
-            return available;
-        };
-        let credit = if command.action == Some(Action::TransmitFrame) {
-            command
-                .rows
-                .and_then(|frame| frame.checked_sub(2))
-                .and_then(|frame| self.images.get(&handle)?.frames.get(frame as usize))
-                .map_or(0, |frame| frame.pixels.storage_bytes())
-        } else {
-            self.images.get(&handle).map_or(0, Image::storage_bytes)
-        };
-        available.saturating_add(credit).min(self.storage_limit)
+    pub fn decode_limit(&self, _command: &Command) -> usize {
+        self.storage_limit
     }
 
     pub fn images(&self) -> impl Iterator<Item = &Image> {
@@ -1990,13 +1977,19 @@ mod tests {
     }
 
     #[test]
-    fn decode_limit_reserves_only_available_or_replaced_storage() {
+    fn decode_limit_allows_eviction_at_commit() {
         let mut state = GraphicsState::new(8);
         let existing = Command { image_id: Some(1), ..Default::default() };
-        state.store(&existing, pixels(1, 4)).unwrap();
+        state.store(&existing, pixels(1, 8)).unwrap();
 
-        assert_eq!(state.decode_limit(&Command { image_id: Some(2), ..Default::default() }), 4);
-        assert_eq!(state.decode_limit(&existing), 8);
+        let replacement = Command { image_id: Some(2), ..Default::default() };
+        assert_eq!(state.decode_limit(&replacement), 8);
+        state.store(&replacement, pixels(2, 8)).unwrap();
+        assert!(state.image_by_id(NonZeroU32::new(1).unwrap()).is_none());
+        assert_eq!(
+            state.image_by_id(NonZeroU32::new(2).unwrap()).unwrap().pixels().bytes(),
+            &[2; 8]
+        );
     }
 
     #[test]
