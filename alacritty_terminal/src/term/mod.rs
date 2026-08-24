@@ -937,7 +937,7 @@ impl<T> Term<T> {
         &mut self,
         now: std::time::Instant,
     ) -> Option<std::time::Duration> {
-        self.graphics.advance_animations(now)
+        self.graphics.advance_animations(now).0
     }
 
     /// Graphics state paired with the active grid.

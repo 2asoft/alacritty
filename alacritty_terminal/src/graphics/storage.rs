@@ -755,9 +755,9 @@ impl GraphicsState {
         Ok(())
     }
 
-    pub fn advance_animations(&mut self, now: Instant) -> Option<Duration> {
+    pub fn advance_animations(&mut self, now: Instant) -> (Option<Duration>, bool) {
         if self.images.is_empty() {
-            return None;
+            return (None, false);
         }
         let placed: Vec<_> = self
             .images
@@ -766,6 +766,7 @@ impl GraphicsState {
             .filter(|handle| self.placements.image_is_placed(*handle))
             .collect();
         let mut next_deadline = None;
+        let mut changed = false;
         for handle in placed {
             let Some(image) = self.images.get_mut(&handle) else {
                 continue;
@@ -788,6 +789,13 @@ impl GraphicsState {
                         image.completed_loops = image.completed_loops.saturating_add(wraps);
                         if image.current_frame != index {
                             image.current_frame = index;
+                            changed = true;
+                            #[cfg(debug_assertions)]
+                            if let Some(path) =
+                                std::env::var_os("ALACRITTY_TEST_ANIMATION_STATE_FILE")
+                            {
+                                let _ = std::fs::write(path, index.to_string());
+                            }
                             self.serial = self.serial.saturating_add(1);
                             image.content_generation = self.serial;
                         }
@@ -811,7 +819,7 @@ impl GraphicsState {
                     Some(next_deadline.map_or(deadline, |current: Instant| current.min(deadline)));
             }
         }
-        next_deadline.map(|deadline| deadline.saturating_duration_since(now))
+        (next_deadline.map(|deadline| deadline.saturating_duration_since(now)), changed)
     }
 
     fn command_image_handle(&self, command: &Command) -> Result<ImageHandle, GraphicsError> {
@@ -1148,6 +1156,7 @@ mod tests {
             state.image_by_id(NonZeroU32::new(2).unwrap()).unwrap().pixels().bytes(),
             &[3; 12]
         );
+        assert_invariants(&state);
     }
 
     #[test]
@@ -1438,6 +1447,27 @@ mod tests {
             }),
             Err(GraphicsError::Invalid)
         );
+        assert_eq!(
+            state.compose_frames(&Command {
+                image_id: Some(1),
+                rows: Some(9),
+                columns: Some(1),
+                ..Default::default()
+            }),
+            Err(GraphicsError::NotFound)
+        );
+        assert_eq!(
+            state.compose_frames(&Command {
+                image_id: Some(1),
+                rows: Some(1),
+                columns: Some(2),
+                x: Some(2),
+                crop_width: Some(1),
+                crop_height: Some(1),
+                ..Default::default()
+            }),
+            Err(GraphicsError::Invalid)
+        );
 
         state
             .delete(
@@ -1511,7 +1541,7 @@ mod tests {
             .unwrap();
 
         let start = Instant::now();
-        assert_eq!(state.advance_animations(start), Some(Duration::from_millis(10)));
+        assert_eq!(state.advance_animations(start), (Some(Duration::from_millis(10)), false));
         state.advance_animations(start + Duration::from_millis(10));
         assert_eq!(
             state.image_by_id(NonZeroU32::new(1).unwrap()).unwrap().pixels().bytes(),
@@ -1651,8 +1681,9 @@ mod tests {
                 ..Default::default()
             })
             .unwrap();
-        let deadline = state.advance_animations(Instant::now());
+        let (deadline, changed) = state.advance_animations(Instant::now());
         let image = state.image_by_id(NonZeroU32::new(1).unwrap()).unwrap();
+        assert!(changed);
         assert_eq!(image.current_frame, 1);
         assert_eq!(image.pixels().bytes(), &[2; 4]);
         assert_eq!(deadline, Some(Duration::from_millis(10)));
@@ -1682,12 +1713,12 @@ mod tests {
         let start = Instant::now();
         let handle = state.command_image_handle(&image).unwrap();
         let generation = state.images[&handle].content_generation;
-        assert_eq!(state.advance_animations(start), None);
+        assert_eq!(state.advance_animations(start), (None, false));
         assert_eq!(state.images[&handle].current_frame, 0);
         assert_eq!(state.images[&handle].pixels().bytes(), &[1; 4]);
         assert_eq!(state.images[&handle].content_generation, generation);
         assert!(state.images[&handle].next_frame_at.is_none());
-        assert_eq!(state.advance_animations(start + Duration::from_millis(1)), None);
+        assert_eq!(state.advance_animations(start + Duration::from_millis(1)), (None, false));
         assert_eq!(state.images[&handle].current_frame, 0);
         assert_eq!(state.images[&handle].content_generation, generation);
         assert!(state.images[&handle].next_frame_at.is_none());
@@ -1709,6 +1740,27 @@ mod tests {
             .unwrap();
 
         assert_eq!(state.images.get(&handle).unwrap().completed_loops, 0);
+    }
+
+    #[test]
+    fn retransmitting_base_image_removes_animation_state() {
+        let mut state = GraphicsState::new(12);
+        let image = Command { image_id: Some(1), ..Default::default() };
+        state.store(&image, pixels(1, 4)).unwrap();
+        state
+            .store_frame(&Command { image_id: Some(1), ..Default::default() }, pixels(2, 4))
+            .unwrap();
+        state
+            .control_animation(&Command { image_id: Some(1), width: Some(3), ..Default::default() })
+            .unwrap();
+
+        state.store(&image, pixels(3, 4)).unwrap();
+
+        let image = state.image_by_id(NonZeroU32::new(1).unwrap()).unwrap();
+        assert!(image.frames.is_empty());
+        assert_eq!(image.animation_state, AnimationState::Stopped);
+        assert_eq!(image.pixels().bytes(), &[3; 4]);
+        assert_eq!(state.frame_count, 0);
     }
 
     #[test]
@@ -1840,6 +1892,62 @@ mod tests {
                 )
                 .unwrap(),
             (2, 2)
+        );
+    }
+
+    #[test]
+    fn image_limit_allows_replacement_without_temporary_growth() {
+        let mut state = GraphicsState::new(MAX_IMAGES_PER_BUFFER * 4);
+        for image_id in 1..=MAX_IMAGES_PER_BUFFER as u32 {
+            state
+                .store(&Command { image_id: Some(image_id), ..Default::default() }, pixels(1, 4))
+                .unwrap();
+        }
+        assert_eq!(state.images().count(), MAX_IMAGES_PER_BUFFER);
+        state.store(&Command { image_id: Some(1), ..Default::default() }, pixels(2, 4)).unwrap();
+        assert_eq!(
+            state.store(
+                &Command { image_id: Some(MAX_IMAGES_PER_BUFFER as u32 + 1), ..Default::default() },
+                pixels(3, 4),
+            ),
+            Err(GraphicsError::NoSpace)
+        );
+    }
+
+    #[test]
+    fn placement_limit_allows_replacement_without_temporary_growth() {
+        let mut state = GraphicsState::new(4);
+        let image = Command { image_id: Some(1), ..Default::default() };
+        state.store(&image, pixels(1, 4)).unwrap();
+        for placement_id in 1..=crate::graphics::placement::MAX_PLACEMENTS_PER_BUFFER as u32 {
+            state
+                .place(
+                    &Command { placement_id: Some(placement_id), ..image.clone() },
+                    Point::default(),
+                )
+                .unwrap();
+        }
+        assert_eq!(
+            state.placements().count(),
+            crate::graphics::placement::MAX_PLACEMENTS_PER_BUFFER
+        );
+        state
+            .place(
+                &Command { placement_id: Some(1), ..image.clone() },
+                Point::new(Line(1), crate::index::Column(1)),
+            )
+            .unwrap();
+        assert_eq!(
+            state.place(
+                &Command {
+                    placement_id: Some(
+                        crate::graphics::placement::MAX_PLACEMENTS_PER_BUFFER as u32 + 1
+                    ),
+                    ..image
+                },
+                Point::default(),
+            ),
+            Err(GraphicsError::NoSpace)
         );
     }
 
@@ -2293,6 +2401,23 @@ mod tests {
     }
 
     #[test]
+    fn reverse_partial_region_scroll_moves_only_contained_placements() {
+        let mut state = GraphicsState::new(4);
+        let image = Command { image_id: Some(1), rows: Some(2), ..Default::default() };
+        state.store(&image, pixels(1, 4)).unwrap();
+        state.place(&image, Point::new(Line(2), crate::index::Column(0))).unwrap();
+        state.place(&image, Point::new(Line(0), crate::index::Column(1))).unwrap();
+        let region = Line(1)..Line(8);
+
+        state.scroll_down(&region, 2, false);
+        let mut placements: Vec<_> = state.placements().collect();
+        placements.sort_by_key(|placement| placement.anchor().column);
+        assert_eq!(placements[0].anchor().line, Line(4));
+        assert_eq!(placements[0].clip_region, Some((Line(1), Line(8))));
+        assert_eq!(placements[1].anchor().line, Line(0));
+    }
+
+    #[test]
     fn placements_follow_scrollback_and_are_pruned_with_history() {
         let mut state = GraphicsState::new(4);
         let command = Command { image_id: Some(1), ..Default::default() };
@@ -2653,6 +2778,32 @@ mod tests {
         state.store(&Command { image_id: Some(3), ..Default::default() }, pixels(3, 4)).unwrap();
         assert!(state.image_by_id(NonZeroU32::new(1).unwrap()).is_some());
         assert!(state.image_by_id(NonZeroU32::new(2).unwrap()).is_none());
+    }
+
+    #[test]
+    fn repeated_upload_place_and_delete_restores_all_accounting() {
+        let mut state = GraphicsState::new(4);
+        for generation in 0..100 {
+            let image = Command { image_id: Some(1), ..Default::default() };
+            state.store(&image, pixels(generation, 4)).unwrap();
+            state.place(&image, Point::default()).unwrap();
+            state
+                .delete(
+                    &Command {
+                        delete: Some(crate::graphics::DeleteTarget(b'I')),
+                        image_id: Some(1),
+                        ..Default::default()
+                    },
+                    Point::default(),
+                    Line(0)..Line(1),
+                )
+                .unwrap();
+            assert_eq!(
+                (state.used_bytes(), state.images().count(), state.placements().count()),
+                (0, 0, 0)
+            );
+            assert_invariants(&state);
+        }
     }
 
     #[test]
