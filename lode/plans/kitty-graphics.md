@@ -18,7 +18,7 @@ Implement the complete Kitty terminal graphics protocol described by the accepte
 - Animation frames load as quota-counted canonical RGBA canvases, support frame editing and alpha/overwrite composition, client-selected frames, stop/loading/run states, loop limits, visible and gapless frame gaps, frame deletion, and UI-scheduled playback deadlines. Stop resets loop progress, loading resumes when a frame arrives, animation transitions damage their placements, and runtime framebuffer tests cover automatic and client-selected playback.
 - Primary grid width changes reflow cells in `alacritty_terminal/src/grid/resize.rs`; transient, serde-skipped cell markers apply the same mapping to classic and deferred graphics anchors without adding per-cell steady-state storage.
 - Terminal renderable state is collected under lock, while OpenGL work occurs after lock release. Without placements, rendering skips history/viewport placeholder scans and image snapshot allocation.
-- Multiplexer interoperability uses capability queries rather than terminal identity. tmux 3.7c renders classic placements through enabled DCS passthrough. Zellij 0.45.0 receives positive host graphics and `CSI 16 t` cell-pixel responses, accepts child graphics commands, and emits an Alacritty-compatible stream; its installed runtime does not flush that complete stream during the live isolated session, which remains a Zellij boundary.
+- Multiplexer interoperability uses capability queries rather than terminal identity. tmux 3.7c renders classic placements through enabled DCS passthrough. Zellij 0.45.0 wraps a complete compatible stream in synchronized updates. The complete-spec re-audit found that synchronized replay bypassed deferred barriers; barrier-aware completion, timeout, and overflow replay now preserve command and response order, and an isolated Zellij framebuffer test renders the relayed image.
 
 ## Accepted decisions
 
@@ -53,6 +53,9 @@ Implement the complete Kitty terminal graphics protocol described by the accepte
 19. [x] Implement and test gapless frames and stop-time loop reset; complete animation canvas, loading, loop, composition, chunking, retransmission, scheduler, and runtime playback scenarios.
 20. [x] Complete RIS, text-erasure, reverse/margin scrolling, placeholder erasure, geometry-query, fuzz-state, repeated-accounting, and always-on performance validation.
 21. [x] Run the complete workspace, application, terminal, reference, VTE, fuzz, framebuffer, benchmark, Lode, and diff checks. The final Linux run passed 235 terminal tests, 84 application tests, 45 reference tests, 58 VTE tests, workspace Clippy, 1,000 instrumented fuzz runs, the expanded framebuffer smoke, and a 125.5 ms mean always-on ordinary-text benchmark. Final animation acceptance used Kitty 0.48.2 `kitten icat` with treemd's 645-frame GIF: four framebuffer captures differed across playback and playback was visible. A 64 MB quota-pressure run kept treemd's software-driven modal animation rendering beyond its previous placeholder failure point; its unique-ID frame churn, slow software encoding, and stale-placeholder reuse remain treemd client behavior rather than native KGP animation behavior.
+22. [x] Re-fetch the complete written specification without distributing it, map every heading and control family to local requirements, and independently audit code, tests, RFC claims, and accepted extensions.
+23. [x] Correct synchronized-update ordering, usage-hint bitmask handling, frame-composition defaults/mode, non-direct `m` handling, explicit zero identifiers, response identity, POSIX shared-memory lifetime order, missing-image response detail, 8-bit ST coverage, and stale conformance claims.
+24. [x] Re-run complete verification after the audit corrections. Fresh evidence passed 243 terminal tests, 84 application tests, 45 reference tests, 62 VTE tests, workspace Clippy with warnings denied, fuzz-crate check, 1,000 sanitizer-instrumented fuzz runs, the full framebuffer smoke, and isolated tmux and Zellij framebuffer tests. A CPU-31 A/B benchmark measured the audited parser at 126.2 ms versus 128.1 ms for the pre-audit branch. Lode structure and diff checks passed.
 
 Each goal stops only after its focused tests, adjacent suites, formatting, linting, docs, and Lode state pass. Commit verified coherent increments separately.
 
@@ -60,7 +63,7 @@ The source-grounded scenario matrix is [Kitty graphics conformance](../../docs/k
 
 ## Risks and rollback
 
-Parser changes affect all terminal input. Keep generic APC support isolated and verify existing OSC/DCS/PM/SOS behavior. Grid tracking can corrupt placement lifetime; invalid anchors must remove placements rather than clamp. Renderer layering can regress text; preserve an empty-state fast path and compare controlled framebuffers. Graphics is always available, so rollback is source-level and remains commit-local by coherent protocol increment.
+Parser changes affect all terminal input. Keep generic APC support isolated and verify existing OSC/DCS/PM/SOS behavior. Grid tracking can corrupt placement lifetime; anchors removed by normal capacity pruning must remove placements rather than clamp, while text-only scrollback erasure preserves detached classic placements without remapping them. Renderer layering can regress text; preserve an empty-state fast path and compare controlled framebuffers. Graphics is always available, so rollback is source-level and remains commit-local by coherent protocol increment.
 
 ## Related Lode
 

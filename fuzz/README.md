@@ -1,6 +1,6 @@
 # Kitty graphics fuzzing
 
-`kitty_stream` feeds arbitrary PTY bytes through the VTE parser, ordered graphics request pipeline, decoder, terminal state, and grid resize path with a bounded graphics configuration.
+`kitty_stream` feeds arbitrary PTY bytes through the VTE parser, synchronized-update completion and timeout replay, ordered graphics request pipeline, decoder, terminal state, and grid resize path with a bounded graphics configuration.
 
 Install `cargo-fuzz`, then run:
 

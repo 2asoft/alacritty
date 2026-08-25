@@ -2,15 +2,15 @@
 
 - **Feature Name:** `kitty_graphics`
 - **Start Date:** 2026-08-22
-- **Status:** Accepted private-fork design; implementation active
+- **Status:** Implemented; complete written-spec and cross-protocol audit verified
 - **Base Revision:** `alacritty/alacritty@7dd7b5b`
 - **Protocol Baseline:** Kitty terminal graphics protocol as published 2026-08-22
 - **Scope:** Alacritty, `alacritty_terminal`, and `vte`
 - **Submission Status:** Private fork only; not intended for upstream submission
 
-This document follows the Rust RFC structure: motivation and user model first, implementation and corner cases second, then drawbacks, alternatives, prior art, unresolved questions, and future work. citeturn575486view0
+This document follows the Rust RFC structure: motivation and user model first, implementation and corner cases second, then drawbacks, alternatives, prior art, unresolved questions, and future work.
 
-The implementation target is current Alacritty `master` at commit `7dd7b5b`. citeturn575486view1
+The implementation target is current Alacritty `master` at commit `7dd7b5b`.
 
 ## Summary
 
@@ -58,7 +58,7 @@ Development may stage these capabilities, but partial protocol support is not th
 
 The implementation does not change `$TERM`, impersonate another terminal, launch external renderers, or add unrelated graphics protocols.
 
-The Kitty protocol itself remains authoritative for externally observable protocol behavior. This RFC specifies Alacritty architecture and resolves behavior the external protocol leaves implementation-defined, particularly storage, resize/reflow, resource management, execution ordering, and renderer organization. citeturn575486view6turn575486view7
+The Kitty protocol itself remains authoritative for externally observable protocol behavior. This RFC specifies Alacritty architecture and resolves behavior the external protocol leaves implementation-defined, particularly storage, resize/reflow, resource management, execution ordering, and renderer organization.
 
 ---
 
@@ -118,25 +118,25 @@ and terminated by ST:
 ESC \
 ```
 
-Alacritty's current `vte` parser recognizes APC syntactically, but APC, PM, and SOS share an ignored `SosPmApcString` state. Bytes inside such strings are discarded. The `Perform` interface exposes DCS, OSC, CSI, ESC, printing, and execution callbacks, but no APC callback. citeturn767575view1turn767575view0turn767575view2
+Alacritty's current `vte` parser recognizes APC syntactically, but APC, PM, and SOS share an ignored `SosPmApcString` state. Bytes inside such strings are discarded. The `Perform` interface exposes DCS, OSC, CSI, ESC, printing, and execution callbacks, but no APC callback.
 
 Therefore Kitty graphics cannot currently be implemented exclusively inside `alacritty_terminal`; the parser interface must first expose APC data.
 
 ## Current execution model
 
-Incoming PTY data is parsed while `Term` is locked. Current `event_loop.rs` reads into a 1 MiB buffer, acquires the terminal lock, and invokes `state.parser.advance(&mut **terminal, ...)`. Alacritty already limits continuous processing while locked, but image work can involve far larger computational costs than ordinary escape-sequence handling. citeturn767575view3turn767575view4
+Incoming PTY data is parsed while `Term` is locked. Current `event_loop.rs` reads into a 1 MiB buffer, acquires the terminal lock, and invokes `state.parser.advance(&mut **terminal, ...)`. Alacritty already limits continuous processing while locked, but image work can involve far larger computational costs than ordinary escape-sequence handling.
 
 Performing PNG decoding, zlib decompression, filesystem reads, shared-memory mapping, or large allocations from inside that critical section would increase render latency and create an avoidable denial-of-service surface.
 
 The graphics implementation therefore requires an ordered parser suspension mechanism: protocol parsing establishes a command boundary; heavyweight processing executes outside `Term`'s lock; the resulting transaction is then committed atomically before subsequent PTY bytes are interpreted.
 
-This is also required for protocol response ordering. A graphics capability query followed immediately by another terminal query must produce replies in input order. citeturn575486view6
+This is also required for protocol response ordering. A graphics capability query followed immediately by another terminal query must produce replies in input order.
 
 ## Current grid limitation
 
 A Kitty placement is attached to terminal content, not permanently to a framebuffer coordinate.
 
-Alacritty's primary grid reflows on width changes. Growing columns can merge wrapped rows; shrinking columns can split rows. Current resize code explicitly performs these transformations. citeturn767575view5turn767575view6
+Alacritty's primary grid reflows on width changes. Growing columns can merge wrapped rows; shrinking columns can split rows. Current resize code explicitly performs these transformations.
 
 A placement represented only as:
 
@@ -155,7 +155,7 @@ Graphics anchors must participate in the same logical-cell transformation as ter
 
 ## Rendering limitation
 
-Alacritty currently collects renderable terminal state while holding the terminal lock, releases that lock, then performs GPU work. Its renderer has separate text and rectangle facilities and supports its existing OpenGL renderer paths. citeturn575486view3turn575486view4
+Alacritty currently collects renderable terminal state while holding the terminal lock, releases that lock, then performs GPU work. Its renderer has separate text and rectangle facilities and supports its existing OpenGL renderer paths.
 
 Kitty requires image content in multiple compositing strata:
 
@@ -180,7 +180,7 @@ The Kitty graphics protocol is suitable for Alacritty because it separates:
 
 It additionally supplies modern composition mechanisms including alpha, z-index, reusable image IDs, Unicode placeholders, relative placements, and animation.
 
-This maps naturally onto Alacritty's existing distinction between terminal state and renderer state while remaining fully terminal-native. citeturn575486view6
+This maps naturally onto Alacritty's existing distinction between terminal state and renderer state while remaining fully terminal-native.
 
 ---
 
@@ -226,7 +226,7 @@ Default:
 320,000,000 bytes
 ```
 
-This is intentionally comparable to the storage budget described by the Kitty protocol documentation. citeturn575486view6
+This is intentionally comparable to the storage budget described by the Kitty protocol documentation.
 
 This budget counts canonical stored image/frame pixels. A deferred decode may use one additional working buffer bounded by the same limit so a new image can be validated before atomic commit evicts old data. Canonical storage remains within quota, and peak CPU pixel memory remains bounded by stored quota plus one decode working buffer. GPU texture memory is separately managed as a renderer cache.
 
@@ -244,7 +244,7 @@ When false, transfers requiring Alacritty to open local filesystem or shared-mem
 
 This option exists because local-object transports extend the trust boundary beyond bytes already delivered through the PTY.
 
-Alacritty's current `[terminal]` configuration already groups terminal-level behavioral settings, making a nested graphics configuration consistent with existing organization. citeturn575486view5
+Alacritty's current `[terminal]` configuration already groups terminal-level behavioral settings, making a nested graphics configuration consistent with existing organization.
 
 ## Capability detection
 
@@ -303,7 +303,7 @@ Ordinary placements are anchored to terminal content.
 
 When their anchor line scrolls upward into retained history, the placement follows it.
 
-When history containing the anchor is permanently pruned, the placement is removed.
+When ordinary scrolling pushes the anchor beyond retained-history capacity, the placement is removed. Text-only scrollback erasure does not itself delete classic graphics; detached anchors remain non-visible and cannot remap to unrelated text.
 
 Merely changing the user's viewport does not mutate placement state. It changes which retained placements are visible.
 
@@ -347,7 +347,7 @@ Therefore:
 
 No special opaque "image cell" type is introduced.
 
-Alacritty's current cell representation already stores the character, foreground color, background color, optional underline color, and zero-width characters required to interpret the placeholder encoding. citeturn767575view7turn767575view8
+Alacritty's current cell representation already stores the character, foreground color, background color, optional underline color, and zero-width characters required to interpret the placeholder encoding.
 
 ## Layering
 
@@ -393,7 +393,9 @@ Where the protocol requests a response, Alacritty returns the protocol-defined s
 
 ## 1. Normative basis
 
-Externally visible Kitty graphics behavior MUST follow the current Kitty terminal graphics protocol baseline referenced by this RFC. citeturn575486view6turn575486view7
+Externally visible Kitty graphics behavior MUST follow the complete Kitty terminal graphics protocol at `https://sw.kovidgoyal.net/kitty/graphics-protocol/` and its source at `kovidgoyal/kitty@77630f3a6748cdf0e3675cc6b768d5dd018a5052`.
+
+The complete rendered specification was re-fetched during the conformance audit. Its temporary Markdown representation had BLAKE3 `f61ab0bae0aadf9d4bf74cb16dcf9dc4c15b8269f8586991afd7639a9d31a84a`. The upstream specification text is an audit input and is not distributed with this repository. The independently authored heading-by-heading requirement mapping is in [Kitty graphics conformance](kitty-graphics-conformance.md).
 
 Where the external protocol leaves implementation policy unspecified, this RFC is normative for the private Alacritty fork.
 
@@ -405,6 +407,8 @@ The following words describe implementation requirements:
 - **MAY:** optional implementation strategy compatible with externally visible requirements.
 
 Unknown future protocol keys MUST be ignored when they are syntactically parseable and do not make an otherwise-known command ambiguous. This provides forward compatibility.
+
+The parser also accepts bounded Kitty-runtime extensions: `f=0` as default RGBA, `q>2` as complete suppression, nonzero `U` as a virtual-placement request, unpadded base64, larger bounded chunks, and omitted/repeated continuation actions. Action semantics still change only for defined flag values such as `C=1`.
 
 A future incompatible protocol change requires updating this protocol baseline and conformance tests.
 
@@ -495,7 +499,7 @@ Alacritty renderer:
 
 ### Current state
 
-Current `vte` routes APC, PM, and SOS into the ignored `SosPmApcString` parser state. `Perform` has no APC callback. citeturn767575view1turn767575view2
+Current `vte` routes APC, PM, and SOS into the ignored `SosPmApcString` parser state. `Perform` has no APC callback.
 
 ### Required change
 
@@ -556,13 +560,14 @@ Add:
 ```text
 alacritty_terminal/src/graphics/
     animation.rs
-    command.rs
     image.rs
     mod.rs
     parser.rs
     placeholder.rs
     placement.rs
+    rowcolumn_diacritics.rs
     storage.rs
+    transaction.rs
     transport.rs
 ```
 
@@ -636,9 +641,9 @@ Exceeding the bound places the APC parser in `Overflow`; it consumes until termi
 
 The published protocol guides clients to 4 KiB direct chunks. Kitty 0.48.2's own graphics client emits chunks up to 128 KiB and omits optional base64 padding. Alacritty accepts this bounded implementation behavior for interoperability while retaining 4 KiB control data, total transaction, decoded-byte, metadata, and storage limits.
 
-The implementation MUST reject encoded chunks larger than 128 KiB before append/copy operations and accept both canonical padded base64 and Kitty's unpadded form.
+The implementation MUST reject encoded chunks larger than 128 KiB before append/copy operations and accept both canonical padded base64 and Kitty's unpadded form. It accepts the written `m`/optional-`q` continuation controls and, for frame data, `a=f`. It also accepts Kitty's emitted omitted/repeated action variants as a bounded compatibility extension; accepting a superset does not relax transaction ordering or resource bounds.
 
-This is important because a 2026 Kitty security advisory involved insufficient capacity handling while appending direct graphics data, demonstrating that graphics input must be treated as hostile even when chunking appears bounded. citeturn575486view8
+This is important because a 2026 Kitty security advisory involved insufficient capacity handling while appending direct graphics data, demonstrating that graphics input must be treated as hostile even when chunking appears bounded.
 
 ---
 
@@ -690,9 +695,15 @@ bytes after command
 
 ### Why the event loop changes
 
-Current `event_loop.rs` hands its whole unprocessed buffer to `state.parser.advance()` while holding the terminal lock and then marks the whole range processed. citeturn767575view3
+Current `event_loop.rs` hands its whole unprocessed buffer to `state.parser.advance()` while holding the terminal lock and then marks the whole range processed.
 
 The implementation MUST instead retain the unconsumed suffix when a graphics barrier is reached.
+
+### Synchronized updates
+
+Synchronized updates (`CSI ?2026 h/l`) are an alternate parser ingress, not merely a redraw optimization. Completion, timeout, and buffer-overflow replay MUST stop at every ordered graphics barrier. The PTY loop MUST commit each deferred request before replaying later buffered bytes. Query replies therefore remain ordered before later DA replies, and chunk completion remains ordered before placement.
+
+Buffered replay is bounded by the synchronized-update limit. It MUST drain without requiring additional PTY input after the ending sequence or timeout has already been received.
 
 ### Heavy operations
 
@@ -814,6 +825,8 @@ struct PlacementHandle(u64);
 ```
 
 Protocol IDs are secondary indexes.
+
+Usage hint `N` is a bitmask. The transient policy tests bit zero (`N & 1`), so future independent bits do not disable the currently defined hint. Frame-level hints may be ignored because the written protocol permits terminals to ignore usage hints.
 
 Internal handles MUST NOT be reused during a terminal session unless wraparound is safely handled.
 
@@ -981,7 +994,7 @@ before validating the requested size against:
 
 ## 10. Transfer methods
 
-The implementation supports all current transfer methods specified by Kitty. citeturn575486view6
+The implementation supports all current transfer methods specified by Kitty.
 
 ### Direct
 
@@ -993,7 +1006,7 @@ The first chunk carries transmission metadata.
 
 Continuation chunks cannot arbitrarily redefine the transfer.
 
-Image state is not committed until the final chunk has been received and validated.
+Image state is not committed until the final chunk has been received and validated. The `m` key is direct-transfer metadata; file, temporary-file, and shared-memory commands attempt their complete object load immediately even when a client supplies `m=1`.
 
 ### File
 
@@ -1136,9 +1149,9 @@ If any precommit step fails, old state remains unchanged.
 
 ### Anonymous images
 
-Protocol image ID zero does not become an internal map key shared by all anonymous images.
+An omitted image ID and explicit `i=0` both select anonymous image behavior. Protocol image ID zero does not become an internal map key shared by all anonymous images.
 
-Each anonymous image receives its own private `ImageHandle`.
+Each anonymous image receives its own private `ImageHandle`. Explicit `I=0` likewise means no image number and does not allocate a terminal-assigned ID.
 
 ### Image number
 
@@ -1213,7 +1226,7 @@ Classic placement semantics differ from text-cell lifetime:
 
 Therefore adding an `ImagePlacement` field to every `Cell` would encode the wrong ownership model.
 
-A maintained implementation based on cell-associated placement metadata documents limitations around overlapping/classic placement semantics; this reinforces keeping ordinary placements independent from cells. citeturn575486view12
+A maintained implementation based on cell-associated placement metadata documents limitations around overlapping/classic placement semantics; this reinforces keeping ordinary placements independent from cells.
 
 ---
 
@@ -1268,7 +1281,7 @@ Its terminal anchor still follows terminal content.
 
 ### Pixel offsets
 
-Pixel offsets are validated against cell dimensions when placement is created as required by protocol.
+The written protocol requires clients to keep pixel offsets below cell dimensions but does not define a terminal error for invalid client values. Alacritty follows Kitty runtime by clamping accepted offsets to the current cell bounds. Only `C=1` suppresses cursor movement; other accepted values retain the default movement policy.
 
 A later font-size change does not retroactively invalidate the placement.
 
@@ -1313,7 +1326,7 @@ Renderer composition is divided into these logical passes:
 8. Alacritty-owned UI overlays
 ```
 
-This reflects the protocol distinction between extremely-negative images, ordinary negative-z images, and nonnegative images. citeturn575486view6
+This reflects the protocol distinction between extremely-negative images, ordinary negative-z images, and nonnegative images.
 
 ### Equal z-index
 
@@ -1427,11 +1440,9 @@ Placements entering retained history remain present.
 
 ### History pruning
 
-When an anchor's retained row is permanently removed, its placement MUST be removed.
+When normal scrolling pushes an anchor beyond the configured retained-history capacity, its placement MUST be removed.
 
-Image data is not automatically removed unless protocol lifetime or quota policy requires it.
-
-This distinction prevents a placement-lifetime bug class observed in another terminal implementation, where anchors referring to pruned scrollback could survive and later resolve to incorrect screen positions. citeturn575486view10
+Image data is not automatically removed unless protocol lifetime or quota policy requires it. Explicit text-only erasure such as `ED 3` does not delete classic graphics. An anchor detached by scrollback erasure remains non-visible and continues through later ordinary scroll/prune processing; it MUST NOT remap to unrelated content or `(0, 0)`.
 
 ### Viewport movement
 
@@ -1546,7 +1557,7 @@ Operations whose terminal semantics require clearing visible graphics remove vis
 
 ### Scrollback purge
 
-When scrollback is purged, any classic placements whose anchors are contained only in discarded history are deleted.
+`ED 3` and other text-only erasure do not delete classic placements. This follows the written protocol's rule that erasure other than the visible clear operation has no effect on graphics. Detached history anchors remain non-visible and are removed only by later normal capacity pruning, graphics deletion, replacement, reset, or eviction.
 
 ### Placeholder cells
 
@@ -1578,7 +1589,7 @@ Alacritty's existing `Cell` has:
 - optional underline color;
 - zero-width characters.
 
-Those fields are sufficient to decode the protocol representation without enlarging every terminal cell. citeturn767575view7turn767575view8
+Those fields are sufficient to decode the protocol representation without enlarging every terminal cell.
 
 ### Virtual placement
 
@@ -1756,7 +1767,7 @@ terminal-query
 
 Alacritty MUST enqueue the graphics response before processing the later terminal query sufficiently to generate its response.
 
-This is one reason deferred graphics commands create parser barriers. citeturn575486view6
+This is one reason deferred graphics commands create parser barriers.
 
 ### Quiet modes
 
@@ -1768,7 +1779,9 @@ All responses honor protocol quiet settings:
 
 ### Response construction
 
-Responses SHOULD be built into a bounded small buffer.
+Responses SHOULD be built into a bounded small buffer. Missing-image placement failures include `ENOENT` plus bounded printable detail. Other failures include the required stable protocol code and may include bounded printable detail.
+
+A malformed command whose image identity cannot be recovered does not emit an invented `i=0` response. An image-number-only failure identifies itself with `I` and does not invent `i=0`; successful numbered transmission includes the allocated nonzero `i`. Responses preserve the recoverable image ID, image number, placement ID, and frame number from the client transaction.
 
 Arbitrary payload/path strings MUST NOT be echoed verbatim into response text.
 
@@ -1828,6 +1841,10 @@ Frame loading supports:
 All geometry and byte sizes use checked arithmetic.
 
 ### Frame composition
+
+The specification's frame-composition prose/example and control-reference table disagree about the frame meanings of `r` and `c`. Alacritty follows the prose/example and Kitty runtime: `r` selects the source frame and `c` selects the destination frame. The prose sentence describing offsets conflicts with the worked example, control-reference table, and Kitty runtime. Alacritty follows the latter three: `X/Y` select the source origin and `x/y` select the destination origin.
+
+An omitted or zero `w` or `h` means the full image width or height, not the remaining extent after an offset. Consequently, a nonzero origin with an omitted dimension can make the rectangle invalid. Only `C=1` selects overwrite; every other accepted value uses the default alpha blend.
 
 Frame composition:
 
@@ -2007,7 +2024,7 @@ pub struct Renderer {
 }
 ```
 
-Alacritty's current renderer already separates renderer facilities and supports multiple OpenGL shader paths. citeturn575486view4
+Alacritty's current renderer already separates renderer facilities and supports multiple OpenGL shader paths.
 
 ### GPU cache
 
@@ -2069,7 +2086,7 @@ Only textures can be evicted; canonical terminal images remain until terminal gr
 
 GPU operations MUST occur without `Term`'s mutex.
 
-Current Alacritty already builds renderable state under lock and performs renderer work afterwards. Graphics preserve this model. citeturn575486view3
+Current Alacritty already builds renderable state under lock and performs renderer work afterwards. Graphics preserve this model.
 
 Conceptually:
 
@@ -2254,7 +2271,7 @@ CAN/SUB during APC:
 
 ### Soft reset
 
-Soft-reset behavior follows terminal/protocol requirements and MUST be covered explicitly by tests.
+The baseline Alacritty/VTE implementation does not implement DECSTR. If soft reset is added, its graphics behavior requires an explicit protocol review and wire test; this RFC does not silently equate it with hard reset.
 
 ### Hard reset
 
@@ -2275,18 +2292,7 @@ GPU textures become unreachable and are lazily reclaimed.
 
 ## 40. Configuration reload
 
-### `enabled: true → false`
-
-Immediately:
-
-- abort pending graphics transaction;
-- clear both screen graphics states;
-- invalidate render snapshots/cache generations;
-- request full redraw.
-
-### `false → true`
-
-Starts with empty graphics state.
+Graphics support is always available and has no runtime enable/disable transition.
 
 ### `local_transmission: true → false`
 
@@ -2368,6 +2374,9 @@ The completed feature MUST support all currently defined action families.
 | scrollback interaction | Yes |
 | alternate screen interaction | Yes |
 | reset interaction | Yes |
+| complete control-data key/action table | Yes |
+| window and cell pixel geometry | Yes |
+| synchronized-update ordering | Yes |
 
 A staged build missing one of these items may be useful but is not "protocol complete".
 
@@ -3082,7 +3091,7 @@ Graphics parsers process large attacker-controlled binary inputs.
 
 PNG, zlib, base64, local transports, arithmetic involving image geometry, and GPU texture handling all enlarge attack surface.
 
-The 2026 Kitty graphics security advisory demonstrates that apparently simple payload growth logic can become memory-safety relevant in lower-level implementations. Rust reduces classes of memory corruption but does not remove denial-of-service, overflow, excessive allocation, parser-state, or logic risks. citeturn575486view8
+The 2026 Kitty graphics security advisory demonstrates that apparently simple payload growth logic can become memory-safety relevant in lower-level implementations. Rust reduces classes of memory corruption but does not remove denial-of-service, overflow, excessive allocation, parser-state, or logic risks.
 
 ## Memory consumption
 
@@ -3192,7 +3201,7 @@ Classic graphics do not share cell erase/lifetime semantics, and several placeme
 
 Cell ownership is correct only for the Unicode placeholder mechanism specifically designed around cells.
 
-Prior implementations demonstrate that a cell-centric shortcut imposes limitations once overlapping, z-order, and newer placement semantics are required. citeturn575486view12
+Prior implementations demonstrate that a cell-centric shortcut imposes limitations once overlapping, z-order, and newer placement semantics are required.
 
 ## Why not replace Alacritty terminal state with another terminal library
 
@@ -3258,7 +3267,7 @@ Changing `$TERM` would conflate graphics support with the much larger terminfo a
 
 The protocol deliberately encodes placeholder semantics using Unicode and terminal attributes.
 
-Alacritty's existing cell already stores the relevant information. citeturn767575view7turn767575view8
+Alacritty's existing cell already stores the relevant information.
 
 Special-casing storage would defeat properties that make placeholders useful:
 
@@ -3304,15 +3313,15 @@ Its implementation and specification establish the externally observable model f
 - z-order;
 - resource queries.
 
-This RFC intentionally does not infer protocol semantics from another implementation when the published specification is explicit. citeturn575486view6turn575486view7
+This RFC intentionally does not infer protocol semantics from another implementation when the published specification is explicit.
 
 ## Ghostty
 
-Ghostty is useful architectural prior art because its graphics state separates stored images from placements and treats graphics as terminal state rather than merely renderer state. Its current implementation also demonstrates generation tracking, pending image state, quota management, and viewport-resolved placements. citeturn575486view9
+Ghostty is useful architectural prior art because its graphics state separates stored images from placements and treats graphics as terminal state rather than merely renderer state. Its current implementation also demonstrates generation tracking, pending image state, quota management, and viewport-resolved placements.
 
-A recent graphics/scrollback defect in Ghostty is particularly instructive: placements whose anchors were pruned from scrollback could survive with incorrect resolved position. The fix reinforces this RFC's requirement that anchor invalidation be explicit and tested as part of grid pruning. citeturn575486view10
+A recent graphics/scrollback defect in Ghostty is particularly instructive: placements whose anchors were pruned from scrollback could survive with incorrect resolved position. The fix reinforces this RFC's requirement that anchor invalidation be explicit and tested as part of grid pruning.
 
-The `ghostling` example further demonstrates a useful terminal/rendering boundary: graphics placements and pixel data can be exposed from terminal state to an independent renderer without making GPU state authoritative. citeturn575486view11
+The `ghostling` example further demonstrates a useful terminal/rendering boundary: graphics placements and pixel data can be exposed from terminal state to an independent renderer without making GPU state authoritative.
 
 Ghostty remains prior art, not a runtime dependency and not an alternative source of normative protocol semantics.
 
@@ -3320,11 +3329,11 @@ Ghostty remains prior art, not a runtime dependency and not an alternative sourc
 
 `st-graphics` demonstrates that a relatively small terminal can add Kitty-protocol graphics, but its documented architecture/limitations also illustrate the compromises of representing broader graphics semantics through cell-oriented machinery.
 
-This RFC therefore borrows the proof of feasibility, not the cell-ownership model. citeturn575486view12
+This RFC therefore borrows the proof of feasibility, not the cell-ownership model.
 
 ## Contour and other native terminals
 
-Contour has shipped native Kitty graphics functionality, providing additional evidence that the protocol can be integrated into a terminal renderer without adopting another terminal's architecture. citeturn575486view13
+Contour has shipped native Kitty graphics functionality, providing additional evidence that the protocol can be integrated into a terminal renderer without adopting another terminal's architecture.
 
 Prior art collectively suggests the recurring hard problems are not texture upload itself, but:
 
@@ -3452,7 +3461,7 @@ They should receive independent protocol state and independent specifications ra
 
 ---
 
-# Appendix A: Proposed module ownership
+# Appendix A: Module ownership
 
 ```text
 vte/
@@ -3463,10 +3472,6 @@ vte/
 
 alacritty_terminal/
 └── src/
-    ├── ansi.rs
-    │   Kitty APC dispatch
-    │   parser barriers
-    │
     ├── event_loop.rs
     │   partial input consumption
     │   ordered deferred graphics work
@@ -3478,8 +3483,8 @@ alacritty_terminal/
     │   ├── parser.rs
     │   │   Kitty control/payload parser
     │   │
-    │   ├── command.rs
-    │   │   typed commands
+    │   ├── transaction.rs
+    │   │   chunk assembly/deferred requests
     │   │
     │   ├── transport.rs
     │   │   direct/file/temp/shm
@@ -3492,6 +3497,9 @@ alacritty_terminal/
     │   │
     │   ├── placeholder.rs
     │   │   Unicode placeholder decoding
+    │   │
+    │   ├── rowcolumn_diacritics.rs
+    │   │   generated placeholder indices
     │   │
     │   ├── animation.rs
     │   │   frames/control/composition
@@ -3657,7 +3665,7 @@ Before considering graphics complete:
 - [x] Oversized textures tiled.
 - [x] Relative graphs cycle checked.
 - [x] Relative depth bounded.
-- [x] History pruning invalidates anchors.
+- [x] Normal history-capacity pruning invalidates anchors; text-only erasure does not remap detached anchors.
 - [x] Fuzz targets run under sanitizers where applicable.
 - [x] Repeated upload/delete has stable memory usage.
 - [x] Context-loss reconstruction tested.
@@ -3697,18 +3705,20 @@ The feature is complete only when every row in [the Kitty graphics conformance r
 4. queries validate without mutation and remain ordered before later terminal responses;
 5. image IDs, image numbers, placement IDs, successful replacement, failed atomic replacement, and generated responses are correct;
 6. classic crop, scale, offset, clipping, cursor movement, scroll, reverse scroll, margins, history, and primary-buffer reflow are correct;
-7. pruned anchors never survive as corrupted positions;
+7. normal capacity-pruned anchors never survive as corrupted positions, while text-only `ED 3` preserves classic graphics without remapping them;
 8. Unicode placeholders pass exhaustive identity, inheritance, placement-ID, background, sparse-grid, clipping, scrolling, and deletion tests;
 9. relative placements pass parent selection, virtual-parent origin, offset, cursor, cycle, depth, error-response, replacement, deletion, pruning, and eviction tests;
 10. every lowercase and uppercase deletion selector, optional placement qualifier, range boundary, virtual-placement rule, and upload-cancellation rule works;
 11. animation frame loading, editing, default and gapless timing, canvases, chunking, control states, finite and infinite loops, stop reset, composition, deletion, retransmission, scheduling, and visible playback work;
-12. primary, alternate, RIS, clear-screen, text-erasure, and placeholder-erasure interactions are correct;
+12. primary, alternate, RIS, visible clear-screen, `ED 3`, other text-erasure, and placeholder-erasure interactions are correct;
 13. image bytes, frame bytes, pending data, metadata, GPU cache, and transient uploads remain bounded and repeated lifecycle operations have stable accounting;
 14. no large transport, decode, or allocation operation holds the terminal lock;
 15. framebuffer tests reproduce all z strata, equal-z ordering, alpha overlap, transparent backgrounds, crop/scale/offset, placeholder suppression, animation, texture eviction, GL-state restoration, and context reconstruction;
 16. parser, transaction, state machine, image decoders, animation, and random grid interaction are fuzz-tested;
 17. graphics-client pixel and cell geometry queries remain coherent;
-18. ordinary non-graphics Alacritty workloads show no material steady-state parser, memory, or redraw regression.
+18. ordinary non-graphics Alacritty workloads show no material steady-state parser, memory, or redraw regression;
+19. synchronized-update completion, timeout, and overflow preserve graphics barriers and response order;
+20. every heading in the complete written specification maps to an explicit conformance requirement, test, or documented accepting extension.
 
 ---
 
@@ -3716,53 +3726,14 @@ The feature is complete only when every row in [the Kitty graphics conformance r
 
 Primary specification and project sources:
 
-- [Kitty terminal graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/)
-- [Alacritty source repository](https://github.com/alacritty/alacritty)
+- [Kitty terminal graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/), audited completely against `kovidgoyal/kitty@77630f3a6748cdf0e3675cc6b768d5dd018a5052`
+- [Alacritty source repository](https://github.com/alacritty/alacritty), implementation baseline `7dd7b5b0`
+- [Kitty graphics conformance mapping](kitty-graphics-conformance.md)
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-Security and prior-art sources:
+Security and prior art:
 
 - [Kitty security advisories](https://github.com/kovidgoyal/kitty/security/advisories)
-- [Ghostty source repository](https://github.com/ghostty-org/ghostty)
+- [Ghostty source repository](https://github.com/ghostty-org/ghostty), oracle revision `9f0e1719dc918368367d368bfe300f59bb68b5a4`
 - [st-graphics source repository](https://github.com/sergei-grechanik/st-graphics)
 - [Contour source repository](https://github.com/contour-terminal/contour)
-
-
-
-
-
-
-
-
-
-
-
-
-
-RFC structure:
-
 - [Rust RFC template](https://github.com/rust-lang/rfcs/blob/master/0000-template.md)
-

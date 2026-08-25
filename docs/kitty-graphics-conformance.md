@@ -7,6 +7,7 @@ This matrix defines the protocol-observable tests required for complete Kitty gr
 - Kitty protocol and `kitty_tests/graphics.py` at `kovidgoyal/kitty@77630f3a6748cdf0e3675cc6b768d5dd018a5052`.
 - Ghostty `src/terminal/kitty/graphics_*.zig` at `ghostty-org/ghostty@9f0e1719dc918368367d368bfe300f59bb68b5a4`.
 - Runtime comparisons use Kitty 0.48.2.
+- The complete rendered specification at `https://sw.kovidgoyal.net/kitty/graphics-protocol/` was re-fetched for this audit. Its temporary Markdown representation has BLAKE3 `f61ab0bae0aadf9d4bf74cb16dcf9dc4c15b8269f8586991afd7639a9d31a84a` and is not distributed with this repository.
 
 The written protocol defines required behavior. Kitty resolves ambiguities in its documentation, and Ghostty provides an independent compatibility check. Tests derived from external scenarios use independent fixtures and native Alacritty test APIs. Do not copy Kitty's GPL test source into this repository.
 
@@ -18,6 +19,31 @@ Status meanings:
 - `Implementation required`: inspection shows that behavior is absent.
 - `Policy`: an intentional Alacritty behavior outside Kitty's required semantics.
 
+## Complete written-spec audit
+
+The audit maps every specification heading to requirements below. `A minimal example` is informative; all other headings contribute requirements or client constraints.
+
+| Specification heading | Requirement groups |
+| --- | --- |
+| Getting the window size | Terminal interaction and lifecycle |
+| The graphics escape code | Stream, parser, and responses |
+| Transferring pixel data; RGB/RGBA; PNG; Compression | Pixel formats and compression |
+| Transmission medium; Local client; Remote client | Transports and chunking |
+| Querying support and available transmission mediums | Stream, parser, and responses; Transports and chunking |
+| Display images on screen; Controlling displayed image layout | Identity, storage, and replacement; Classic placement and rendering |
+| Unicode placeholders | Unicode placeholders |
+| Relative placements | Relative placements |
+| Deleting images | Deletion |
+| Suppressing responses | Stream, parser, and responses |
+| Requesting image IDs | Identity, storage, and replacement |
+| Usage hints | Identity, storage, and replacement |
+| Animation; frame transfer; control; composition | Animation |
+| Image persistence and storage quotas | Identity, storage, and replacement; Robustness and performance |
+| Control data reference | Every parser and action-specific group |
+| Interaction with other terminal actions | Terminal interaction and lifecycle |
+
+The audit also inventories every production call into the VTE parser. Normal input, synchronized-update completion, synchronized-update timeout, and synchronized-buffer overflow must all preserve ordered graphics barriers.
+
 ## Stream, parser, and responses
 
 | Requirement | Status |
@@ -26,13 +52,14 @@ Status meanings:
 | APC control and payload storage are independently bounded across arbitrary input splits; payloads accept Kitty's bounded 128 KiB client chunks | Covered |
 | Unknown keys are ignored, the final duplicate key wins, integer domains are enforced, and all action-specific permissive flag values match Kitty | Covered |
 | Default `a=t`, `f=32`, `t=d`, `q=0`, `m=0`, and display/frame defaults produce the documented semantics | Covered |
-| A query response is ordered before a later DA response | Covered |
+| A query response is ordered before a later DA response, including inside synchronized updates | Covered |
 | `a=q` validates input without storing or replacing an image | Covered |
-| Commands without an image ID or number do not emit unsolicited responses | Covered |
+| Commands without a recoverable nonzero image ID or number, including malformed controls and anonymous queries, do not emit unsolicited or invented `i=0` responses | Covered |
 | `q=1` suppresses success and `q=2` suppresses success and failure, including chunk continuations | Covered |
 | Success and failure responses preserve initial image, image-number, placement, and frame identity | Covered |
 | Conflicting `i` and `I` produce `EINVAL` unless quiet mode suppresses it | Covered |
-| Placement and relative-placement failures emit `ENOENT`, `ENOPARENT`, `ETOODEEP`, and `ECYCLE` on the wire | Covered |
+| Placement and relative-placement failures emit `ENOENT`, `ENOPARENT`, `ETOODEEP`, and `ECYCLE` on the wire; missing-image responses include printable detail | Covered |
+| Synchronized-update completion, timeout, and buffer overflow replay each Kitty APC only up to its ordered barrier | Covered |
 
 ## Pixel formats and compression
 
@@ -54,28 +81,28 @@ Status meanings:
 | Final-chunk cursor position anchors transmit-and-place | Covered |
 | Any delete command aborts an incomplete upload, and the next upload starts cleanly | Covered |
 | Chunk success, decode failure, continuation failure, and changing quiet levels preserve initial request identity | Covered |
-| Direct chunks accept `m`-only continuations and Kitty's repeated `a=t`, `a=T`, and `a=f` continuation actions | Covered |
+| Direct chunks accept the written `m`/optional-`q` continuation form, the written `a=f` frame form, and Kitty's emitted omitted/repeated action variants | Covered, compatibility extension |
 | File and shared-memory transports ignore the direct-only `m` flag | Covered |
 | File and shared-memory `S`/`O` ranges accept exact ranges and reject short or overflowing ranges with request identity | Covered |
 | Regular files and safe symlinks are read; symlink loops and every special-file class fail without blocking | Covered |
 | Sensitive opened objects are rejected after path resolution | Covered on Linux |
 | Temporary files are removed only when both the directory and marker constraints hold | Covered |
-| POSIX shared memory is read, range-checked, unlinked, and closed | Covered |
-| Windows named shared memory is read, range-checked, and closed without unlink semantics | Covered by a Windows-gated test; cross-compiled on Linux |
+| POSIX shared memory is read and range-checked before it is unlinked and closed | Covered |
+| Shared-memory transmission on non-Unix hosts is rejected with `ENOTSUP` | Policy |
 | Disabling local transmission cancels in-flight local work while direct transmission remains available | Covered |
 
 ## Identity, storage, and replacement
 
 | Requirement | Status |
 | --- | --- |
-| Number-based transmission allocates the smallest free nonzero client ID and replies with both ID and number | Covered |
+| Number-based transmission allocates the smallest free nonzero client ID and replies with both ID and number; explicit `i=0` and `I=0` retain anonymous defaults | Covered |
 | Number lookup and deletion select the newest image with that number | Covered |
 | Successful retransmission of an ID removes its old placements and does not display the replacement implicitly | Covered |
 | Failed or incomplete replacement preserves the old image and placements atomically | Covered, policy extension |
 | Same nonzero `(i,p)` replaces a placement without duplication or flicker | Covered |
 | `p` is ignored for image ID zero; repeated zero placement IDs remain independent | Covered |
 | Canonical image bytes, animation bytes, image count, placement count, and frame count stay within storage quota; one deferred decode working buffer is separately bounded by the same limit | Covered |
-| Eviction is deterministic, prioritizes transient, unplaced, and non-visible images, and remains reachable when decoding a new ID at full storage quota | Covered |
+| Usage hint `N` is parsed as a bitmask; eviction recognizes its transient bit and prioritizes transient, unplaced, and non-visible images | Covered |
 | Frame-level transient hints are accepted but intentionally ignored because frames share canonical in-memory image ownership | Policy |
 | Usage hints on placement commands do not mutate stored image policy | Covered |
 | Replacement remains possible at metadata and byte limits without temporary double accounting | Covered |
@@ -149,7 +176,7 @@ Status meanings:
 | Loading mode parks on the final frame and resumes when a frame arrives | Covered |
 | Infinite and finite loop budgets have exact semantics, and stop resets the completed-loop counter | Covered |
 | Animation deadlines wake the application scheduler without busy polling | Covered |
-| Frame composition validates source/destination frames, bounds, same-frame overlap, and alpha/overwrite semantics | Covered |
+| Frame composition validates source/destination frames, omitted/zero full-image rectangle defaults, bounds, same-frame overlap, and exact `C=1` overwrite versus default blend semantics | Covered |
 | Frame deletion promotes roots, adjusts the current frame, updates rendering, and frees accounting | Covered |
 | Retransmitting the base image removes all animation state | Covered |
 | A runtime framebuffer test proves automatic multi-frame playback; scheduler tests prove gapless skipping | Covered |
@@ -163,15 +190,15 @@ Status meanings:
 | Primary-buffer width reflow tracks classic and deferred anchors without corrupting source pixels | Covered |
 | RIS clears visible graphics according to Alacritty reset semantics | Covered |
 | Entering a fresh 1049 alternate screen clears its graphics independently of the primary screen | Covered |
-| `ED 2` clears visible graphics, while EL, ECH, DCH, and other text erasure leave classic graphics unchanged | Covered |
+| `ED 2` clears visible graphics, while `ED 3`, EL, ECH, DCH, and other text erasure leave classic graphics unchanged | Covered |
 | Erasing placeholder cells removes only their cell-derived image instances | Covered |
-| `CSI 14 t`, `CSI 16 t`, and `CSI 18 t` report coherent text-area pixels, cell pixels, and text-area cells | Covered |
+| `TIOCGWINSZ`, `CSI 14 t`, `CSI 16 t`, and `CSI 18 t` report coherent text-area pixels, cell pixels, and text-area cells | Covered |
 
 ## Robustness and performance
 
 | Requirement | Status |
 | --- | --- |
-| Stateful fuzzing covers parser splits, chunk transactions, decoders, state operations, grid movement, reset, and cancellation | Covered |
+| Stateful fuzzing covers parser splits, synchronized replay and timeout, chunk transactions, decoders, state operations, grid movement, reset, and cancellation | Covered |
 | Random state tests assert image/placement/index/quota/graph invariants after every operation | Covered |
 | Framebuffer smoke covers all z strata, crop/scale/offset, alpha overlap, placeholders, animation, texture eviction, and context reconstruction | Covered |
 | Ordinary non-graphics workloads show no material parser, memory, or redraw regression with always-on support | Covered |
@@ -198,7 +225,16 @@ Isolated runtime checks use separate tmux sockets and Zellij socket directories 
 
 - tmux 3.7c passes classic Kitty graphics commands to Alacritty when the pane's `allow-passthrough` option is `on`. A zsh child rendered a controlled PNG through the tmux DCS passthrough wrapper.
 - Zellij 0.45.0 probes the host with a Kitty query and requires `CSI 16 t` before enabling its graphics proxy. Alacritty answers both requests, and a zsh child receives `OK` from Zellij for query and transmit-and-place commands.
-- Zellij's emitted 4 KiB direct chunks and separate placement command replay successfully in Alacritty. The installed Zellij server did not flush a complete host transmission during the live isolated session, so visible Zellij rendering is blocked in Zellij rather than Alacritty.
-- Kitty 0.48.2 `kitten icat` has client-specific multiplexer limits. Under tmux it forces Unicode-placeholder output, and that client/multiplexer path did not render in the installed tmux build. Under Zellij it rejects zero `TIOCGWINSZ` pixel fields before using Zellij's forwarded pixel queries. Classic tmux passthrough and direct replay of Zellij's host stream isolate these failures from Alacritty's graphics parser and renderer.
+- Zellij's emitted 4 KiB chunks and placement are wrapped in `CSI ?2026 h/l` synchronized updates. Barrier-aware synchronized replay preserves transmit/placement and query/DA order. An isolated `Alacritty -> Zellij -> zsh` framebuffer test renders a controlled image.
+- Kitty 0.48.2 `kitten icat` has client-specific multiplexer limits. Under tmux it forces Unicode-placeholder output, and that client/multiplexer path did not render in the installed tmux build. Under Zellij it rejects zero `TIOCGWINSZ` pixel fields before using Zellij's forwarded pixel queries. Raw protocol fixtures therefore provide the multiplexer acceptance boundary.
+
+## Written-spec ambiguities and accepted extensions
+
+- The remote-client section requires 4 KiB chunks and narrowly constrained continuation controls. Alacritty also accepts bounded 128 KiB chunks, unpadded base64, omitted `a=f`, and repeated transmission actions because Kitty 0.48.2 emits these forms. This is an accepting-terminal extension, not a weaker resource bound.
+- The frame-composition prose/example and control-reference table reverse the meanings of frame keys `r` and `c`. Alacritty follows the prose/example and Kitty runtime: `r` selects the source frame and `c` selects the destination frame. The prose sentence for pixel offsets conflicts with the worked example, control-reference table, and Kitty runtime; Alacritty follows the latter three, with `X/Y` as the source origin and `x/y` as the destination origin.
+- The specification requires clients to keep placement `X/Y` below cell dimensions but does not define terminal failure behavior. Alacritty follows Kitty by clamping offsets to the cell.
+- Kitty-compatible permissive values are accepting extensions: `f=0` means default RGBA, `q>2` clamps to complete suppression, and nonzero `U` requests a virtual placement. Other noncanonical flags use default behavior unless the defined value is present. In particular, only `C=1` selects no cursor movement or overwrite.
+- Frame-level transient hints are accepted and ignored. The specification explicitly permits terminals to ignore usage hints.
+- Failed replacement preserves prior image state atomically. This strengthens behavior where the written protocol specifies only successful replacement.
 
 Real-application review uses `treemd` with transparent PNGs, Unicode placeholders, and modal GIF playback. Kitty serves as the comparison terminal with matched window, font, and color configuration where geometry matters. Treemd's software GIF path creates a new virtual image ID for every frame and does not delete stale image data; under sustained quota pressure this can evict IDs that Treemd later reuses through retained placeholders. Native terminal animation is therefore the acceptance boundary for Alacritty animation, while Treemd's unique-ID software playback remains client-owned behavior.

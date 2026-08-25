@@ -17,14 +17,14 @@ Kitty graphics support spans generic APC recognition, terminal protocol and imag
 
 Kitty graphics support is always available. `[terminal.graphics]` controls resource policy: its decoded storage limit defaults to 320,000,000 bytes per screen buffer, and local-object transmission defaults to allowed.
 
-Capability discovery uses the Kitty query rather than terminal identity. Alacritty also reports text-area pixels, character-cell pixels, and text-area cells through `CSI 14 t`, `CSI 16 t`, and `CSI 18 t`. tmux clients must use enabled DCS passthrough. Zellij 0.45.0 proxies Kitty graphics after the host query and `CSI 16 t` succeed, but its runtime owns child-command translation and host-output flushing.
+Capability discovery uses the Kitty query rather than terminal identity. Alacritty also reports text-area pixels, character-cell pixels, and text-area cells through `CSI 14 t`, `CSI 16 t`, and `CSI 18 t`. tmux clients must use enabled DCS passthrough. Zellij 0.45.0 proxies Kitty graphics inside synchronized updates; completion, timeout, and overflow replay preserve every deferred barrier before parsing a later command.
 
 ## Invariants
 
 - Every placement references a live image.
 - Named image and placement indexes are unique where protocol IDs require uniqueness.
 - Canonical retained pixels never exceed the configured screen-buffer quota. One deferred decode working buffer is separately bounded by that quota so validated new IDs can trigger atomic commit-time eviction.
-- Tracked anchors either identify retained logical content or invalidate their placements.
+- Tracked anchors follow retained logical content. Normal capacity pruning invalidates placements; text-only scrollback erasure leaves detached anchors non-visible without remapping them.
 - Relative placement graphs are acyclic, depth-bounded, and free of dangling parents.
 - Image replacement is atomic.
 - Dropping every GPU texture does not change terminal semantics.
@@ -33,6 +33,8 @@ Capability discovery uses the Kitty query rather than terminal identity. Alacrit
 - Every image pass restores shared OpenGL bindings, active texture, blend state, and scissor state before a later text batch or frame so renderer-local state caches remain coherent.
 - Graphics state never crosses primary and alternate screen ownership.
 - APC and command parser memory remains bounded for malformed or incomplete input.
+- Every parser ingress, including synchronized completion, timeout, and overflow replay, commits deferred graphics work before interpreting later buffered bytes.
+- Usage hints remain bitmasks, and only explicitly defined flag values change cursor or composition policy.
 
 ## Failure behavior
 

@@ -16,6 +16,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+- Kitty graphics command ordering inside synchronized terminal updates
+- Kitty graphics usage-bit handling, frame composition defaults, and protocol response details
 - Panic when the PTY could not be set to non-blocking
 - Off-by-one in ViMotion::ParagraphUp
 - Unbounded per-cell memory usage for zero-width cells
