@@ -183,9 +183,10 @@ fn read_shared_memory(
     }
     // SAFETY: `descriptor` is newly owned and valid after successful `shm_open`.
     let mut file = unsafe { File::from_raw_fd(descriptor) };
-    // POSIX transport lifetime ends once the terminal has opened the object.
+    let result = read_regular_range(&mut file, command, limit);
+    // POSIX requires the terminal to unlink the object after attempting to read its data.
     unsafe { libc::shm_unlink(name.as_ptr()) };
-    read_regular_range(&mut file, command, limit)
+    result
 }
 
 #[cfg(not(unix))]
