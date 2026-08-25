@@ -679,8 +679,9 @@ impl GraphicsState {
         let destination = image.frame(destination_index).ok_or(GraphicsError::NotFound)?;
         let source_x = command.x_offset.unwrap_or(0);
         let source_y = command.y_offset.unwrap_or(0);
-        let width = command.crop_width.unwrap_or(source.width().saturating_sub(source_x));
-        let height = command.crop_height.unwrap_or(source.height().saturating_sub(source_y));
+        let width = command.crop_width.filter(|width| *width != 0).unwrap_or(image.pixels.width());
+        let height =
+            command.crop_height.filter(|height| *height != 0).unwrap_or(image.pixels.height());
         let destination_x = command.x.unwrap_or(0);
         let destination_y = command.y.unwrap_or(0);
         let overlaps = source_index == destination_index
@@ -698,7 +699,7 @@ impl GraphicsState {
             destination_y,
             width,
             height,
-            overwrite: command.cursor_policy.unwrap_or(0) != 0,
+            overwrite: command.cursor_policy == Some(1),
         })?;
         let old_bytes = destination.storage_bytes();
         let required = composed.storage_bytes();
@@ -907,20 +908,20 @@ impl GraphicsState {
         if command.image_id.unwrap_or(0) != 0 && command.image_number.unwrap_or(0) != 0 {
             return Err(GraphicsError::Invalid);
         }
+        let image_number = command.image_number.filter(|number| *number != 0);
         if command.action == Some(Action::Query) {
             return Ok(StoreOutcome {
                 handle: ImageHandle(0),
                 image_id: NonZeroU32::new(command.image_id.unwrap_or(0)),
-                image_number: command.image_number,
+                image_number,
             });
         }
 
-        let external_id =
-            match (NonZeroU32::new(command.image_id.unwrap_or(0)), command.image_number) {
-                (Some(id), _) => Some(id),
-                (None, Some(_)) => Some(self.allocate_image_id()?),
-                (None, None) => None,
-            };
+        let external_id = match (NonZeroU32::new(command.image_id.unwrap_or(0)), image_number) {
+            (Some(id), _) => Some(id),
+            (None, Some(_)) => Some(self.allocate_image_id()?),
+            (None, None) => None,
+        };
         let replaced = external_id.and_then(|id| self.image_ids.get(&id).copied());
         let replaced_bytes =
             replaced.and_then(|handle| self.images.get(&handle)).map_or(0, Image::storage_bytes);
@@ -954,7 +955,7 @@ impl GraphicsState {
         let image = Image {
             handle,
             external_id,
-            image_number: command.image_number,
+            image_number,
             pixels,
             frames: Vec::new(),
             current_frame: 0,
@@ -966,7 +967,7 @@ impl GraphicsState {
             content_generation: self.serial,
             creation_serial: self.serial,
             last_used_serial: self.serial,
-            transient: command.usage == Some(1),
+            transient: command.usage.is_some_and(|usage| usage & 1 != 0),
         };
         self.used_bytes = self
             .used_bytes
@@ -977,7 +978,7 @@ impl GraphicsState {
             self.image_ids.insert(id, handle);
         }
 
-        Ok(StoreOutcome { handle, image_id: external_id, image_number: command.image_number })
+        Ok(StoreOutcome { handle, image_id: external_id, image_number })
     }
 
     fn allocate_image_id(&self) -> Result<NonZeroU32, GraphicsError> {
@@ -2171,9 +2172,17 @@ mod tests {
             &[2; 4]
         );
 
-        let anonymous = Command { placement_id: Some(9), ..Default::default() };
-        state.store_and_place(&anonymous, pixels(3, 4), Point::default(), 1, 1).unwrap();
+        let anonymous = Command { image_id: Some(0), placement_id: Some(9), ..Default::default() };
+        let outcome =
+            state.store_and_place(&anonymous, pixels(3, 4), Point::default(), 1, 1).unwrap().0;
+        assert_eq!(outcome.image_id, None);
+        assert_eq!(outcome.image_number, None);
         assert_eq!(state.placements().next().unwrap().placement_id, None);
+
+        let anonymous_number = Command { image_number: Some(0), ..Default::default() };
+        let outcome = state.store(&anonymous_number, pixels(4, 4)).unwrap();
+        assert_eq!(outcome.image_id, None);
+        assert_eq!(outcome.image_number, None);
     }
 
     #[test]
@@ -2306,6 +2315,22 @@ mod tests {
         assert!(state.image_by_id(NonZeroU32::new(2).unwrap()).is_none());
         assert!(state.image_by_id(NonZeroU32::new(3).unwrap()).is_some());
         assert_invariants(&state);
+
+        let mut state = setup();
+        state
+            .delete(
+                &Command {
+                    delete: Some(crate::graphics::DeleteTarget(b'r')),
+                    x: Some(3),
+                    y: Some(2),
+                    ..Default::default()
+                },
+                Point::default(),
+                Line(0)..Line(10),
+            )
+            .unwrap();
+        assert_eq!(state.images().count(), 4);
+        assert_eq!(state.placements().count(), 3);
     }
 
     #[test]
@@ -2793,9 +2818,28 @@ mod tests {
     fn eviction_prioritizes_transient_and_unplaced_images() {
         let mut state = GraphicsState::new(8);
         let first = Command { image_id: Some(1), ..Default::default() };
-        let transient = Command { image_id: Some(2), usage: Some(1), ..Default::default() };
+        let transient = Command { image_id: Some(2), usage: Some(3), ..Default::default() };
         state.store(&first, pixels(1, 4)).unwrap();
         state.store(&transient, pixels(2, 4)).unwrap();
+        let transient_handle = state.command_image_handle(&transient).unwrap();
+        state
+            .place(
+                &Command { image_id: Some(2), usage: Some(0), ..Default::default() },
+                Point::new(Line(-1), crate::index::Column(0)),
+            )
+            .unwrap();
+        assert!(state.images[&transient_handle].transient);
+        state
+            .delete(
+                &Command {
+                    delete: Some(crate::graphics::DeleteTarget(b'i')),
+                    image_id: Some(2),
+                    ..Default::default()
+                },
+                Point::default(),
+                Line(0)..Line(10),
+            )
+            .unwrap();
         state.store(&Command { image_id: Some(3), ..Default::default() }, pixels(3, 4)).unwrap();
         assert!(state.image_by_id(NonZeroU32::new(1).unwrap()).is_some());
         assert!(state.image_by_id(NonZeroU32::new(2).unwrap()).is_none());
@@ -2833,6 +2877,57 @@ mod tests {
         state.store(&Command { image_id: Some(3), ..Default::default() }, pixels(3, 4)).unwrap();
         assert!(state.image_by_id(NonZeroU32::new(1).unwrap()).is_some());
         assert!(state.image_by_id(NonZeroU32::new(2).unwrap()).is_none());
+    }
+
+    #[test]
+    fn frame_composition_defaults_and_mode_follow_protocol() {
+        fn compose_with_mode(mode: u32) -> Vec<u8> {
+            let mut state = GraphicsState::new(16);
+            let image = Command { image_id: Some(1), ..Default::default() };
+            state.store(&image, PixelBuffer::from_rgba(1, 1, Arc::from([100, 0, 0, 255]))).unwrap();
+            state
+                .store_frame(
+                    &Command { image_id: Some(1), ..Default::default() },
+                    PixelBuffer::from_rgba(1, 1, Arc::from([0, 100, 0, 128])),
+                )
+                .unwrap();
+            state
+                .compose_frames(&Command {
+                    image_id: Some(1),
+                    rows: Some(2),
+                    columns: Some(1),
+                    cursor_policy: Some(mode),
+                    ..Default::default()
+                })
+                .unwrap();
+            state.image_by_id(NonZeroU32::new(1).unwrap()).unwrap().pixels().bytes().to_vec()
+        }
+
+        assert_eq!(compose_with_mode(2), compose_with_mode(0));
+
+        let mut state = GraphicsState::new(32);
+        let image = Command { image_id: Some(1), ..Default::default() };
+        state.store(&image, PixelBuffer::from_rgba(2, 1, Arc::from([0; 8]))).unwrap();
+        state
+            .store_frame(
+                &Command { image_id: Some(1), ..Default::default() },
+                PixelBuffer::from_rgba(2, 1, Arc::from([1; 8])),
+            )
+            .unwrap();
+        for (crop_width, crop_height) in [(None, None), (Some(0), Some(0))] {
+            assert_eq!(
+                state.compose_frames(&Command {
+                    image_id: Some(1),
+                    rows: Some(2),
+                    columns: Some(1),
+                    x_offset: Some(1),
+                    crop_width,
+                    crop_height,
+                    ..Default::default()
+                }),
+                Err(GraphicsError::Invalid)
+            );
+        }
     }
 
     #[test]

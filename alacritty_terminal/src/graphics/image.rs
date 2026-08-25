@@ -83,11 +83,7 @@ pub fn process_command(
     local_transmission: bool,
 ) -> ProcessedCommand {
     let command = match command {
-        Ok(command)
-            if command.image_id.is_some() && command.image_number.is_some()
-                || command.image_id == Some(0)
-                || command.image_number == Some(0) =>
-        {
+        Ok(command) if command.image_id.is_some() && command.image_number.is_some() => {
             return ProcessedCommand::Error {
                 command: Some(command),
                 error: GraphicsError::Invalid,
@@ -102,6 +98,7 @@ pub fn process_command(
         action,
         Action::Transmit | Action::TransmitAndPlace | Action::Query | Action::TransmitFrame
     ) || command.more == Some(true)
+        && command.transmission.unwrap_or_default() == Transmission::Direct
     {
         return ProcessedCommand::Metadata(command);
     }
@@ -368,21 +365,51 @@ mod tests {
     }
 
     #[test]
-    fn rejects_conflicting_and_zero_image_identifiers_for_metadata_commands() {
-        for command in [
-            Command {
-                action: Some(Action::Delete),
-                image_id: Some(1),
-                image_number: Some(2),
+    fn rejects_conflicting_image_identifiers() {
+        let command = Command {
+            action: Some(Action::Delete),
+            image_id: Some(1),
+            image_number: Some(2),
+            ..Default::default()
+        };
+
+        assert!(matches!(process_command(Ok(command), 4, true), ProcessedCommand::Error {
+            error: GraphicsError::Invalid,
+            ..
+        }));
+    }
+
+    #[test]
+    fn zero_image_identifiers_retain_anonymous_defaults() {
+        for (image_id, image_number) in [(Some(0), None), (None, Some(0))] {
+            let mut command = direct(Format::Rgba, 1, 1, &[1, 2, 3, 4]);
+            command.image_id = image_id;
+            command.image_number = image_number;
+            assert!(matches!(
+                process_command(Ok(command), 4, true),
+                ProcessedCommand::Decoded { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn non_direct_transports_ignore_chunk_flag_and_attempt_loading() {
+        for transmission in
+            [Transmission::File, Transmission::TemporaryFile, Transmission::SharedMemory]
+        {
+            let command = Command {
+                transmission: Some(transmission),
+                format: Some(Format::Rgba),
+                width: Some(1),
+                height: Some(1),
+                more: Some(true),
+                payload: Base64.encode("/alacritty-kitty-missing-object").into_bytes(),
                 ..Default::default()
-            },
-            Command { action: Some(Action::Place), image_id: Some(0), ..Default::default() },
-            Command { action: Some(Action::Animate), image_number: Some(0), ..Default::default() },
-        ] {
-            assert!(matches!(process_command(Ok(command), 4, true), ProcessedCommand::Error {
-                error: GraphicsError::Invalid,
-                ..
-            }));
+            };
+            assert!(matches!(
+                process_command(Ok(command), 4, true),
+                ProcessedCommand::Error { .. }
+            ));
         }
     }
 
