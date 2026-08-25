@@ -18,7 +18,7 @@
   "observations": [
     {
       "available": true,
-      "cell_size_response": false,
+      "cell_size_response": true,
       "kgp_response": true,
       "leaked_placeholder_magenta_pixels": 0,
       "primary_device_attributes_response": true,
@@ -26,6 +26,7 @@
       "response_sequence": [
         "kgp-ok",
         "text-area-pixels",
+        "cell-size-pixels",
         "screen-size-cells",
         "primary-device-attributes"
       ],
@@ -58,7 +59,7 @@
   ],
   "purpose": "observational, not pass/fail",
   "schema": 1,
-  "source_digest": "9d4db17d5a5b7565bbcfc7053226e98264b0b4bab4106e8beffc769046d9589a",
+  "source_digest": "01906538f69568d89e38b6395fd1627990aae4f56c99d3a5d00f95c8a4b50144",
   "toolchain": {
     "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)"
   }

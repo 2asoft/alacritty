@@ -165,7 +165,7 @@ Status meanings:
 | Entering a fresh 1049 alternate screen clears its graphics independently of the primary screen | Covered |
 | `ED 2` clears visible graphics, while EL, ECH, DCH, and other text erasure leave classic graphics unchanged | Covered |
 | Erasing placeholder cells removes only their cell-derived image instances | Covered |
-| Window pixel and cell query mechanisms used by graphics clients report coherent nonzero geometry | Covered |
+| `CSI 14 t`, `CSI 16 t`, and `CSI 18 t` report coherent text-area pixels, cell pixels, and text-area cells | Covered |
 
 ## Robustness and performance
 
@@ -191,5 +191,14 @@ Status meanings:
 - texture eviction stays within the configured byte limit;
 - discarded image textures reconstruct from canonical CPU pixels;
 - image passes leave later text rendering stable.
+
+## Multiplexer interoperability
+
+Isolated runtime checks use separate tmux sockets and Zellij socket directories so existing sessions remain untouched.
+
+- tmux 3.7c passes classic Kitty graphics commands to Alacritty when the pane's `allow-passthrough` option is `on`. A zsh child rendered a controlled PNG through the tmux DCS passthrough wrapper.
+- Zellij 0.45.0 probes the host with a Kitty query and requires `CSI 16 t` before enabling its graphics proxy. Alacritty answers both requests, and a zsh child receives `OK` from Zellij for query and transmit-and-place commands.
+- Zellij's emitted 4 KiB direct chunks and separate placement command replay successfully in Alacritty. The installed Zellij server did not flush a complete host transmission during the live isolated session, so visible Zellij rendering is blocked in Zellij rather than Alacritty.
+- Kitty 0.48.2 `kitten icat` has client-specific multiplexer limits. Under tmux it forces Unicode-placeholder output, and that client/multiplexer path did not render in the installed tmux build. Under Zellij it rejects zero `TIOCGWINSZ` pixel fields before using Zellij's forwarded pixel queries. Classic tmux passthrough and direct replay of Zellij's host stream isolate these failures from Alacritty's graphics parser and renderer.
 
 Real-application review uses `treemd` with transparent PNGs, Unicode placeholders, and modal GIF playback. Kitty serves as the comparison terminal with matched window, font, and color configuration where geometry matters. Treemd's software GIF path creates a new virtual image ID for every frame and does not delete stale image data; under sustained quota pressure this can evict IDs that Treemd later reuses through retained placeholders. Native terminal animation is therefore the acceptance boundary for Alacritty animation, while Treemd's unique-ID software playback remains client-owned behavior.

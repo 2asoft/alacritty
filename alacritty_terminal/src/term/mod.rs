@@ -1002,6 +1002,8 @@ impl<T> Term<T> {
     pub fn set_cell_dimensions(&mut self, width: u16, height: u16) {
         self.cell_width = width.max(1);
         self.cell_height = height.max(1);
+        self.graphics.set_cell_dimensions(self.cell_width, self.cell_height);
+        self.inactive_graphics.set_cell_dimensions(self.cell_width, self.cell_height);
     }
 
     /// Resize terminal to new dimensions.
@@ -2675,6 +2677,13 @@ impl<T: EventListener> Handler for Term<T> {
     }
 
     #[inline]
+    fn cell_size_pixels(&mut self) {
+        self.event_proxy.send_event(Event::TextAreaSizeRequest(Arc::new(move |window_size| {
+            format!("\x1b[6;{};{}t", window_size.cell_height, window_size.cell_width)
+        })));
+    }
+
+    #[inline]
     fn text_area_size_chars(&mut self) {
         let text = format!("\x1b[8;{};{}t", self.screen_lines(), self.columns());
         self.event_proxy.send_event(Event::PtyWrite(text));
@@ -2963,16 +2972,54 @@ mod tests {
     }
 
     #[test]
+    fn font_changes_refresh_native_footprints_in_both_buffers() {
+        let mut term = Term::new(Config::default(), &TermSize::new(80, 24), VoidListener);
+        term.set_cell_dimensions(1, 1);
+        for alternate in [false, true] {
+            if alternate {
+                term.swap_alt();
+            }
+            term.commit_graphics_command(ProcessedCommand::Decoded {
+                command: GraphicsCommand {
+                    action: Some(GraphicsAction::TransmitAndPlace),
+                    image_id: Some(1),
+                    cursor_policy: Some(1),
+                    ..Default::default()
+                },
+                image: crate::graphics::PixelBuffer::from_rgba(3, 2, Arc::from([255; 24])),
+            });
+        }
+        term.set_cell_dimensions(10, 20);
+        for _ in 0..2 {
+            for (column, remaining) in [(2, 1), (1, 0)] {
+                term.commit_graphics_command(ProcessedCommand::Metadata(GraphicsCommand {
+                    action: Some(GraphicsAction::Delete),
+                    delete: Some(crate::graphics::DeleteTarget(b'p')),
+                    x: Some(column),
+                    y: Some(1),
+                    ..Default::default()
+                }));
+                assert_eq!(term.graphics.placements().count(), remaining);
+            }
+            term.swap_alt();
+        }
+    }
+
+    #[test]
     fn graphics_geometry_queries_report_pixels_and_cells() {
         let size = TermSize::new(5, 10);
         let listener = GeometryListener::default();
         let responses = listener.0.clone();
         let mut term = Term::new(Config::default(), &size, listener);
+        let mut parser = ansi::Processor::<ansi::StdSyncHandler>::new();
 
-        term.text_area_size_pixels();
-        term.text_area_size_chars();
+        parser.advance(&mut term, b"\x1b[14t\x1b[16t\x1b[18t");
 
-        assert_eq!(responses.lock().unwrap().as_slice(), ["\x1b[4;160;40t", "\x1b[8;10;5t"]);
+        assert_eq!(responses.lock().unwrap().as_slice(), [
+            "\x1b[4;160;40t",
+            "\x1b[6;16;8t",
+            "\x1b[8;10;5t"
+        ]);
     }
 
     #[test]

@@ -123,6 +123,30 @@ impl GraphicsState {
         self.visible_lines = Line(0)..Line(i32::try_from(screen_lines).unwrap_or(i32::MAX));
     }
 
+    pub fn set_cell_dimensions(&mut self, cell_width: u16, cell_height: u16) {
+        for placement in
+            self.placements.values_mut().filter(|placement| !placement.virtual_placement)
+        {
+            let Some(image) = self.images.get(&placement.image) else { continue };
+            let command = Command {
+                x: Some(placement.source_x),
+                y: Some(placement.source_y),
+                crop_width: placement.source_width,
+                crop_height: placement.source_height,
+                x_offset: Some(placement.x_offset),
+                y_offset: Some(placement.y_offset),
+                columns: placement.columns,
+                rows: placement.rows,
+                ..Default::default()
+            };
+            // An inferred footprint may exceed the representable span after a font change.
+            // Such a placement covers the terminal bounds and cannot fit a scroll margin.
+            placement.cell_span =
+                Self::placement_cell_span_for_image(image, &command, cell_width, cell_height)
+                    .unwrap_or((u32::MAX, u32::MAX));
+        }
+    }
+
     pub fn decode_limit(&self, _command: &Command) -> usize {
         self.storage_limit
     }

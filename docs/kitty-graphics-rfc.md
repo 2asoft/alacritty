@@ -258,6 +258,8 @@ In particular:
 
 Applications discover support using the Kitty graphics query mechanism.
 
+Graphics clients and multiplexers may also need terminal geometry. Alacritty answers `CSI 14 t` with text-area pixels, `CSI 16 t` with character-cell pixels, and `CSI 18 t` with text-area rows and columns. These geometry responses are capability support, not terminal identity signals.
+
 ## Transmission
 
 Applications may transmit image data using protocol-defined direct, file, temporary-file, or shared-memory methods.

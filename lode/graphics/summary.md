@@ -17,6 +17,8 @@ Kitty graphics support spans generic APC recognition, terminal protocol and imag
 
 Kitty graphics support is always available. `[terminal.graphics]` controls resource policy: its decoded storage limit defaults to 320,000,000 bytes per screen buffer, and local-object transmission defaults to allowed.
 
+Capability discovery uses the Kitty query rather than terminal identity. Alacritty also reports text-area pixels, character-cell pixels, and text-area cells through `CSI 14 t`, `CSI 16 t`, and `CSI 18 t`. tmux clients must use enabled DCS passthrough. Zellij 0.45.0 proxies Kitty graphics after the host query and `CSI 16 t` succeed, but its runtime owns child-command translation and host-output flushing.
+
 ## Invariants
 
 - Every placement references a live image.

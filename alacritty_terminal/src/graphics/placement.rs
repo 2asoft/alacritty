@@ -110,6 +110,10 @@ impl Placements {
         self.entries.values()
     }
 
+    pub(crate) fn values_mut(&mut self) -> impl Iterator<Item = &mut Placement> {
+        self.entries.values_mut()
+    }
+
     pub fn tracked_anchors(&self) -> Vec<(PlacementHandle, Point)> {
         self.entries
             .values()

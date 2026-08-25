@@ -4,7 +4,7 @@ This bundle records behavior. Differences do not fail the suite.
 
 | Terminal | Available | KGP query OK | Response sequence | Red classic pixels | Green virtual pixels | Leaked magenta pixels |
 | --- | ---: | ---: | --- | ---: | ---: | ---: |
-| alacritty | yes | yes | kgp-ok, text-area-pixels, screen-size-cells, primary-device-attributes | 1296 | 162 | 0 |
+| alacritty | yes | yes | kgp-ok, text-area-pixels, cell-size-pixels, screen-size-cells, primary-device-attributes | 1296 | 162 | 0 |
 | kitty | yes | yes | kgp-ok, text-area-pixels, cell-size-pixels, screen-size-cells, primary-device-attributes | 1156 | 162 | 0 |
 
 ## Completion expectation

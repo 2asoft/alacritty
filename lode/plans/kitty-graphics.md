@@ -18,6 +18,7 @@ Implement the complete Kitty terminal graphics protocol described by the accepte
 - Animation frames load as quota-counted canonical RGBA canvases, support frame editing and alpha/overwrite composition, client-selected frames, stop/loading/run states, loop limits, visible and gapless frame gaps, frame deletion, and UI-scheduled playback deadlines. Stop resets loop progress, loading resumes when a frame arrives, animation transitions damage their placements, and runtime framebuffer tests cover automatic and client-selected playback.
 - Primary grid width changes reflow cells in `alacritty_terminal/src/grid/resize.rs`; transient, serde-skipped cell markers apply the same mapping to classic and deferred graphics anchors without adding per-cell steady-state storage.
 - Terminal renderable state is collected under lock, while OpenGL work occurs after lock release. Without placements, rendering skips history/viewport placeholder scans and image snapshot allocation.
+- Multiplexer interoperability uses capability queries rather than terminal identity. tmux 3.7c renders classic placements through enabled DCS passthrough. Zellij 0.45.0 receives positive host graphics and `CSI 16 t` cell-pixel responses, accepts child graphics commands, and emits an Alacritty-compatible stream; its installed runtime does not flush that complete stream during the live isolated session, which remains a Zellij boundary.
 
 ## Accepted decisions
 
