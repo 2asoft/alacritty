@@ -139,6 +139,7 @@ The audit also inventories every production call into the VTE parser. Normal inp
 | Placeholder background color remains visible through transparent image pixels | Covered |
 | Successfully resolved cells suppress placeholder glyphs and decorations; unresolved cells remain visible | Covered |
 | Location-based deletion never affects virtual placements; only `i/I`, `n/N`, and `r/R` do | Covered |
+| Full-screen and margin scrolling move placeholder cells without moving or removing their virtual placement prototypes | Covered |
 
 ## Relative placements
 
@@ -226,7 +227,7 @@ Isolated runtime checks use separate tmux sockets and Zellij socket directories 
 - tmux 3.7c passes classic Kitty graphics commands to Alacritty when the pane's `allow-passthrough` option is `on`. A zsh child rendered a controlled PNG through the tmux DCS passthrough wrapper.
 - Zellij 0.45.0 probes the host with a Kitty query and requires `CSI 16 t` before enabling its graphics proxy. Alacritty answers both requests, and a zsh child receives `OK` from Zellij for query and transmit-and-place commands.
 - Zellij's emitted 4 KiB chunks and placement are wrapped in `CSI ?2026 h/l` synchronized updates. Barrier-aware synchronized replay preserves transmit/placement and query/DA order. An isolated `Alacritty -> Zellij -> zsh` framebuffer test renders a controlled image.
-- Kitty 0.48.2 `kitten icat` has client-specific multiplexer limits. Under tmux it forces Unicode-placeholder output, and that client/multiplexer path did not render in the installed tmux build. Under Zellij it rejects zero `TIOCGWINSZ` pixel fields before using Zellij's forwarded pixel queries. Raw protocol fixtures therefore provide the multiplexer acceptance boundary.
+- Kitty 0.48.2 `kitten icat` has client-specific multiplexer limits. Under tmux it forces Unicode-placeholder output. tmux redraws pane text but only forwards KGP payloads to an attached client; it neither retains nor replays image data. Alacritty retains virtual prototypes through pane-margin scrolling, so switching panes and windows in one attached terminal preserves resolvable images. tmux's initial incremental output can expose placeholders until a full `refresh-client`, and a fresh terminal attachment cannot reconstruct images without client retransmission. Kitty 0.48.2 itself shows fragmented placeholders under the same isolated pane/window sequence. Under Zellij, `kitten icat` can read zero `TIOCGWINSZ` pixel fields before Zellij's asynchronous host geometry arrives; an immediate retry then succeeds. Raw protocol fixtures remain the deterministic multiplexer acceptance boundary.
 
 ## Written-spec ambiguities and accepted extensions
 

@@ -17,7 +17,7 @@ Kitty graphics support spans generic APC recognition, terminal protocol and imag
 
 Kitty graphics support is always available. `[terminal.graphics]` controls resource policy: its decoded storage limit defaults to 320,000,000 bytes per screen buffer, and local-object transmission defaults to allowed.
 
-Capability discovery uses the Kitty query rather than terminal identity. Alacritty also reports text-area pixels, character-cell pixels, and text-area cells through `CSI 14 t`, `CSI 16 t`, and `CSI 18 t`. tmux clients must use enabled DCS passthrough. Zellij 0.45.0 proxies Kitty graphics inside synchronized updates; completion, timeout, and overflow replay preserve every deferred barrier before parsing a later command.
+Capability discovery uses the Kitty query rather than terminal identity. Alacritty also reports text-area pixels, character-cell pixels, and text-area cells through `CSI 14 t`, `CSI 16 t`, and `CSI 18 t`. tmux clients must use enabled DCS passthrough; tmux does not retain KGP payloads for a fresh terminal attachment, and its initial incremental placeholder output may require `refresh-client`. Zellij 0.45.0 proxies Kitty graphics inside synchronized updates; completion, timeout, and overflow replay preserve every deferred barrier before parsing a later command.
 
 ## Invariants
 
@@ -29,7 +29,7 @@ Capability discovery uses the Kitty query rather than terminal identity. Alacrit
 - Image replacement is atomic.
 - Dropping every GPU texture does not change terminal semantics.
 - CPU image storage remains straight RGBA; GPU uploads premultiply RGB by alpha before linear filtering and use premultiplied-alpha blending.
-- Valid rendered Unicode placeholder cells contribute image tiles and backgrounds, not visible placeholder glyphs or decorations.
+- Valid rendered Unicode placeholder cells contribute image tiles and backgrounds, not visible placeholder glyphs or decorations. Scrolling moves or erases those cells without moving or removing their immutable virtual placement prototypes.
 - Every image pass restores shared OpenGL bindings, active texture, blend state, and scissor state before a later text batch or frame so renderer-local state caches remain coherent.
 - Graphics state never crosses primary and alternate screen ownership.
 - APC and command parser memory remains bounded for malformed or incomplete input.

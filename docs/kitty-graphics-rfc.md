@@ -1641,6 +1641,8 @@ A placeholder cell referencing no resolvable virtual placement/image renders as 
 
 Because placeholders are cells, existing grid reflow moves their code point, colors, and combining characters together.
 
+Virtual placements are immutable rendering prototypes, not terminal anchors. Scrolling and margin operations move or erase placeholder cells but MUST NOT move or remove their virtual placement prototypes. Only protocol identity/range deletion, image replacement, reset, or resource eviction removes a prototype.
+
 No separate placeholder anchor transform is necessary.
 
 ---

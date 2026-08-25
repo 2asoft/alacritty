@@ -12,7 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
-- Native Kitty graphics parsing, bounded image decoding and transports, placements, animation, storage, and ordered protocol responses
+- Native Kitty graphics parsing, bounded image decoding and transports, placements, animation, storage, ordered protocol responses, and scroll-independent virtual prototypes
 
 ### Fixed
 

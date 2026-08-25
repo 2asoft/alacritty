@@ -2460,6 +2460,35 @@ mod tests {
     }
 
     #[test]
+    fn virtual_placement_prototypes_ignore_scrolling() {
+        for scroll_up in [true, false] {
+            let mut state = GraphicsState::new(4);
+            let command = Command {
+                image_id: Some(1),
+                unicode_placeholder: Some(1),
+                columns: Some(8),
+                rows: Some(4),
+                ..Default::default()
+            };
+            state.store(&command, pixels(1, 4)).unwrap();
+            state.place(&command, Point::new(Line(4), crate::index::Column(75))).unwrap();
+            let region = Line(3)..Line(18);
+
+            if scroll_up {
+                state.scroll_up(&region, 15, 0, false);
+            } else {
+                state.scroll_down(&region, 15, false);
+            }
+
+            assert!(state.placeholder_renderable(1, 0).is_some());
+            assert_eq!(
+                state.placements().next().unwrap().anchor(),
+                Point::new(Line(4), crate::index::Column(75))
+            );
+        }
+    }
+
+    #[test]
     fn partial_region_scroll_moves_only_contained_placements_and_retains_clipping() {
         let mut state = GraphicsState::new(4);
         let image = Command { image_id: Some(1), ..Default::default() };

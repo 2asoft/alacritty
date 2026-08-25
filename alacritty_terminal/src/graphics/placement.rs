@@ -190,7 +190,7 @@ impl Placements {
         let lines = lines as i32;
         let creates_history = region.start == Line(0);
         self.retain(|placement| {
-            if placement.relative.is_some() {
+            if placement.virtual_placement || placement.relative.is_some() {
                 return true;
             }
             let bottom = i64::from(placement.anchor.line.0) + i64::from(placement.cell_span.1);
@@ -225,7 +225,7 @@ impl Placements {
     ) -> Vec<ImageHandle> {
         let lines = lines as i32;
         self.retain(|placement| {
-            if placement.relative.is_some() {
+            if placement.virtual_placement || placement.relative.is_some() {
                 return true;
             }
             let bottom = i64::from(placement.anchor.line.0) + i64::from(placement.cell_span.1);

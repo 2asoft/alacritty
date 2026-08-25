@@ -17,7 +17,7 @@ Notable changes to the `alacritty_terminal` crate are documented in its
 
 ### Added
 
-- Native Kitty graphics protocol support, including classic, Unicode placeholder, relative, and animated images
+- Native Kitty graphics protocol support, including classic, Unicode placeholder, relative, and animated images, with virtual prototypes retained through terminal scrolling
 
 ### Fixed
 
