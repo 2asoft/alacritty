@@ -119,6 +119,13 @@ impl GraphicsError {
             Self::Io => "EIO",
         }
     }
+
+    pub fn protocol_message(self) -> &'static str {
+        match self {
+            Self::NotFound => "ENOENT:image not found",
+            _ => self.protocol_code(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

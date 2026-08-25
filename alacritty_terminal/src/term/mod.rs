@@ -906,12 +906,7 @@ impl<T> Term<T> {
             ProcessedCommand::Error { command: Some(command), error } => {
                 self.graphics_response(&command, Err(error));
             },
-            ProcessedCommand::Error { command: None, error } => {
-                self.event_proxy.send_event(Event::PtyWrite(format!(
-                    "\x1b_Gi=0;{}\x1b\\",
-                    error.protocol_code()
-                )));
-            },
+            ProcessedCommand::Error { command: None, .. } => (),
         }
         self.mark_fully_damaged();
     }
@@ -956,9 +951,8 @@ impl<T> Term<T> {
     ) where
         T: EventListener,
     {
-        let should_respond = command.action == Some(GraphicsAction::Query)
-            || command.image_id.unwrap_or(0) != 0
-            || command.image_number.is_some();
+        let should_respond =
+            command.image_id.unwrap_or(0) != 0 || command.image_number.unwrap_or(0) != 0;
         if !should_respond {
             return;
         }
@@ -968,19 +962,31 @@ impl<T> Term<T> {
             Ok(_) if quiet >= 1 => return,
             Ok(_) => "OK",
             Err(_) if quiet >= 2 => return,
-            Err(error) => error.protocol_code(),
+            Err(error) => error.protocol_message(),
         };
-        let image_id = result.ok().flatten().map(u32::from).or(command.image_id).unwrap_or(0);
-        let mut response = format!("\x1b_Gi={image_id}");
-        if let Some(number) = command.image_number {
-            response.push_str(&format!(",I={number}"));
+        let image_id = result
+            .ok()
+            .flatten()
+            .map(u32::from)
+            .or(command.image_id)
+            .filter(|image_id| *image_id != 0);
+        let mut response = String::from("\x1b_G");
+        let mut separator = "";
+        if let Some(image_id) = image_id {
+            response.push_str(&format!("i={image_id}"));
+            separator = ",";
+        }
+        if let Some(number) = command.image_number.filter(|number| *number != 0) {
+            response.push_str(&format!("{separator}I={number}"));
+            separator = ",";
         }
         if let Some(placement) = command.placement_id.filter(|placement| *placement != 0) {
-            response.push_str(&format!(",p={placement}"));
+            response.push_str(&format!("{separator}p={placement}"));
+            separator = ",";
         }
         if command.action == Some(GraphicsAction::TransmitFrame) {
             if let Some(frame) = command.rows {
-                response.push_str(&format!(",r={frame}"));
+                response.push_str(&format!("{separator}r={frame}"));
             }
         }
         response.push(';');
@@ -3023,7 +3029,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_kitty_command_returns_bounded_error() {
+    fn malformed_kitty_command_without_identity_is_silent() {
         let size = TermSize::new(5, 10);
         let config = Config { graphics: GraphicsConfig::default(), ..Default::default() };
         let listener = RecordingListener::default();
@@ -3034,7 +3040,27 @@ mod tests {
         let command = term.take_graphics_command().unwrap();
         term.commit_graphics_command(crate::graphics::process_command(command, 4, true));
 
-        assert_eq!(responses.lock().unwrap().as_slice(), ["\x1b_Gi=0;EINVAL\x1b\\"]);
+        assert!(responses.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn kitty_apc_accepts_eight_bit_string_terminator() {
+        let size = TermSize::new(5, 10);
+        let listener = RecordingListener::default();
+        let responses = listener.0.clone();
+        let mut term = Term::new(Config::default(), &size, listener);
+        let mut parser = ansi::Processor::<ansi::StdSyncHandler>::new();
+        let input = b"\x1b_Gi=35,f=32,s=1,v=1;AQIDBA==\x9c";
+
+        let consumed = parser.advance_until_terminated(&mut term, input);
+        let request = term.take_graphics_request().unwrap();
+        let options = term.graphics_processing_options_for(&request);
+        term.commit_graphics_command(crate::graphics::process_request(
+            request, options.0, options.1,
+        ));
+
+        assert_eq!(consumed, input.len());
+        assert_eq!(responses.lock().unwrap().as_slice(), ["\x1b_Gi=35;OK\x1b\\"]);
     }
 
     #[test]
@@ -3135,7 +3161,10 @@ mod tests {
             width: Some(3),
             ..Default::default()
         }));
-        assert_eq!(responses.lock().unwrap().as_slice(), ["\x1b_Gi=9;ENOENT\x1b\\"]);
+        assert_eq!(
+            responses.lock().unwrap().as_slice(),
+            ["\x1b_Gi=9;ENOENT:image not found\x1b\\"]
+        );
     }
 
     #[test]
@@ -3159,6 +3188,58 @@ mod tests {
         let responses = responses.lock().unwrap();
         assert_eq!(responses[0], "\x1b_Gi=31;OK\x1b\\");
         assert!(responses[1].starts_with("\x1b[?"));
+    }
+
+    #[test]
+    fn synchronized_updates_preserve_graphics_transactions_and_response_order() {
+        let size = TermSize::new(5, 10);
+        let listener = RecordingListener::default();
+        let responses = listener.0.clone();
+        let mut term = Term::new(Config::default(), &size, listener);
+        let mut parser = ansi::Processor::<ansi::StdSyncHandler>::new();
+        let mut input = &b"\x1b[?2026h\
+            \x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[c\
+            \x1b_Ga=t,i=44,f=32,s=1,v=1,m=1;AQID\x1b\\\
+            \x1b_Gm=0;BA==\x1b\\\
+            \x1b_Ga=p,i=44,p=2,C=1;\x1b\\\
+            \x1b[?2026l"[..];
+
+        while !input.is_empty() || parser.has_pending_input() {
+            let consumed = parser.advance_until_terminated(&mut term, input);
+            input = &input[consumed..];
+            if let Some(request) = term.take_graphics_request() {
+                term.begin_graphics_processing(&request);
+                let options = term.graphics_processing_options_for(&request);
+                let command = crate::graphics::process_request(request, options.0, options.1);
+                term.commit_graphics_command(command);
+            }
+        }
+
+        let responses = responses.lock().unwrap();
+        assert_eq!(responses[0], "\x1b_Gi=31;OK\x1b\\");
+        assert!(responses[1].starts_with("\x1b[?"));
+        assert_eq!(responses[2], "\x1b_Gi=44;OK\x1b\\");
+        assert_eq!(responses[3], "\x1b_Gi=44,p=2;OK\x1b\\");
+        assert!(term.graphics().has_classic_placements());
+    }
+
+    #[test]
+    fn graphics_responses_do_not_invent_zero_image_ids() {
+        let size = TermSize::new(5, 10);
+        let listener = RecordingListener::default();
+        let responses = listener.0.clone();
+        let mut term = Term::new(Config::default(), &size, listener);
+
+        term.commit_graphics_command(ProcessedCommand::Error {
+            command: Some(GraphicsCommand { image_number: Some(7), ..Default::default() }),
+            error: GraphicsError::Invalid,
+        });
+        term.commit_graphics_command(ProcessedCommand::Decoded {
+            command: GraphicsCommand { action: Some(GraphicsAction::Query), ..Default::default() },
+            image: crate::graphics::PixelBuffer::from_rgba(1, 1, Arc::from([1, 2, 3, 4])),
+        });
+
+        assert_eq!(responses.lock().unwrap().as_slice(), ["\x1b_GI=7;EINVAL\x1b\\"]);
     }
 
     #[test]
@@ -3230,7 +3311,7 @@ mod tests {
         }));
         let recorded = responses.lock().unwrap();
         assert_eq!(recorded[recorded.len() - 2], "\x1b_Gi=31,p=7;OK\x1b\\");
-        assert_eq!(recorded[recorded.len() - 1], "\x1b_Gi=404,p=8;ENOENT\x1b\\");
+        assert_eq!(recorded[recorded.len() - 1], "\x1b_Gi=404,p=8;ENOENT:image not found\x1b\\");
         let response_count = recorded.len();
         drop(recorded);
 
