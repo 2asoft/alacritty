@@ -21,7 +21,8 @@
 //!
 //! * UTF-8 Support for Input
 //! * OSC Strings can be terminated by 0x07
-//! * Only supports 7-bit codes
+//! * Control sequence introducers use 7-bit codes; control strings also accept
+//!   8-bit ST
 //!
 //! [`Parser`]: struct.Parser.html
 //! [`Perform`]: trait.Perform.html
@@ -996,6 +997,28 @@ mod tests {
             parser.advance(&mut dispatcher, &INPUT[split..]);
             assert_eq!(dispatcher.dispatched, expected, "split at {split}");
         }
+    }
+
+    #[test]
+    fn parse_apc_with_eight_bit_string_terminator() {
+        let mut dispatcher = Dispatcher::default();
+        let mut parser = Parser::new();
+
+        parser.advance(&mut dispatcher, b"\x1b_Gi=1;AAAA\x9c");
+
+        assert_eq!(dispatcher.dispatched, [
+            Sequence::ApcStart,
+            Sequence::ApcPut(b'G'),
+            Sequence::ApcPut(b'i'),
+            Sequence::ApcPut(b'='),
+            Sequence::ApcPut(b'1'),
+            Sequence::ApcPut(b';'),
+            Sequence::ApcPut(b'A'),
+            Sequence::ApcPut(b'A'),
+            Sequence::ApcPut(b'A'),
+            Sequence::ApcPut(b'A'),
+            Sequence::ApcEnd,
+        ]);
     }
 
     #[test]

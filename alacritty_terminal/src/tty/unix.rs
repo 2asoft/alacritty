@@ -429,6 +429,17 @@ unsafe fn set_nonblocking(fd: c_int) -> Result<()> {
 }
 
 #[test]
+fn window_size_reports_cell_derived_pixels() {
+    let winsize =
+        WindowSize { num_lines: 24, num_cols: 80, cell_width: 8, cell_height: 16 }.to_winsize();
+
+    assert_eq!(winsize.ws_row, 24);
+    assert_eq!(winsize.ws_col, 80);
+    assert_eq!(winsize.ws_xpixel, 640);
+    assert_eq!(winsize.ws_ypixel, 384);
+}
+
+#[test]
 fn test_get_pw_entry() {
     let mut buf: [i8; 1024] = [0; 1024];
     let _pw = get_pw_entry(&mut buf).unwrap();

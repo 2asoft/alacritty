@@ -3529,6 +3529,23 @@ mod tests {
     }
 
     #[test]
+    fn clearing_scrollback_does_not_delete_graphics() {
+        let size = TermSize::new(5, 10);
+        let mut term = Term::new(Config::default(), &size, VoidListener);
+        let command = GraphicsCommand { image_id: Some(1), ..Default::default() };
+        let pixels = crate::graphics::PixelBuffer::from_rgba(1, 1, Arc::from([1, 2, 3, 4]));
+        term.graphics.store(&command, pixels).unwrap();
+        term.graphics.place(&command, Point::new(Line(0), Column(0))).unwrap();
+        term.scroll_up_relative(Line(0), 1);
+        let mut parser = ansi::Processor::<ansi::StdSyncHandler>::new();
+
+        parser.advance(&mut term, b"\x1b[3J");
+
+        assert_eq!(term.history_size(), 0);
+        assert_eq!(term.graphics.placements().next().unwrap().anchor().line, Line(-1));
+    }
+
+    #[test]
     fn kitty_placement_cursor_policy_moves_only_absolute_classic_placements() {
         let size = TermSize::new(10, 10);
         let mut term = Term::new(Config::default(), &size, VoidListener);
@@ -3556,20 +3573,28 @@ mod tests {
     #[test]
     fn kitty_non_direct_transmission_ignores_chunk_flag() {
         let size = TermSize::new(5, 10);
-        let config = Config { graphics: GraphicsConfig::default(), ..Default::default() };
-        let mut term = Term::new(config, &size, VoidListener);
+        let listener = RecordingListener::default();
+        let responses = listener.0.clone();
+        let mut term = Term::new(Config::default(), &size, listener);
         let mut parser = ansi::Processor::<ansi::StdSyncHandler>::new();
         for input in [
-            b"\x1b_Gt=f,m=1,i=1;L3RtcC9pbWFnZQ==\x1b\\".as_slice(),
-            b"\x1b_Gt=t,m=1,i=1;L3RtcC9pbWFnZQ==\x1b\\".as_slice(),
-            b"\x1b_Gt=s,m=1,i=1;L2ltYWdl\x1b\\".as_slice(),
+            b"\x1b_Gt=f,m=1,i=1;L2FsYWNyaXR0eS1raXR0eS1taXNzaW5nLW9iamVjdA==\x1b\\".as_slice(),
+            b"\x1b_Gt=t,m=1,i=1;L2FsYWNyaXR0eS1raXR0eS1taXNzaW5nLW9iamVjdA==\x1b\\".as_slice(),
+            b"\x1b_Gt=s,m=1,i=1;L2FsYWNyaXR0eS1raXR0eS1taXNzaW5nLW9iamVjdA==\x1b\\".as_slice(),
         ] {
             let _consumed = parser.advance_until_terminated(&mut term, input);
-            assert!(matches!(
-                term.take_graphics_request(),
-                Some(crate::graphics::GraphicsRequest::Command(Ok(_)))
+            let request = term.take_graphics_request().unwrap();
+            let options = term.graphics_processing_options_for(&request);
+            term.commit_graphics_command(crate::graphics::process_request(
+                request, options.0, options.1,
             ));
         }
+
+        assert_eq!(responses.lock().unwrap().as_slice(), [
+            "\x1b_Gi=1;EIO\x1b\\",
+            "\x1b_Gi=1;EIO\x1b\\",
+            "\x1b_Gi=1;EIO\x1b\\",
+        ]);
     }
 
     #[test]
