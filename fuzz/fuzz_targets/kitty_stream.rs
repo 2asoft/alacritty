@@ -39,17 +39,30 @@ fuzz_target!(|data: &[u8]| {
     let mut term = Term::new(config, &size, VoidListener);
     let mut parser = Processor::<StdSyncHandler>::new();
     let mut remaining = data;
-    while !remaining.is_empty() {
+    while !remaining.is_empty() || parser.has_pending_input() {
         let consumed = parser.advance_until_terminated(&mut term, remaining);
         if let Some(request) = term.take_graphics_request() {
             term.begin_graphics_processing(&request);
             let options = term.graphics_processing_options_for(&request);
             term.commit_graphics_command(process_request(request, options.0, options.1));
         }
-        if consumed == 0 {
+        remaining = &remaining[consumed..];
+        if consumed == 0 && !parser.has_pending_input() {
             break;
         }
-        remaining = &remaining[consumed..];
+    }
+
+    parser.stop_sync(&mut term);
+    loop {
+        if let Some(request) = term.take_graphics_request() {
+            term.begin_graphics_processing(&request);
+            let options = term.graphics_processing_options_for(&request);
+            term.commit_graphics_command(process_request(request, options.0, options.1));
+        }
+        if !parser.has_pending_input() {
+            break;
+        }
+        let _ = parser.advance_until_terminated(&mut term, b"");
     }
 
     if data.first().is_some_and(|byte| byte & 2 != 0) {

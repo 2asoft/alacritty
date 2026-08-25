@@ -120,20 +120,23 @@ where
         let mut terminal = None;
 
         loop {
-            // Read from the PTY.
-            match self.pty.reader().read(&mut buf[unprocessed..]) {
-                // This is received on Windows/macOS when no more data is readable from the PTY.
-                Ok(0) if unprocessed == 0 => break,
-                Ok(got) => unprocessed += got,
-                Err(err) => match err.kind() {
-                    ErrorKind::Interrupted | ErrorKind::WouldBlock => {
-                        // Go back to mio if we're caught up on parsing and the PTY would block.
-                        if unprocessed == 0 {
-                            break;
-                        }
+            // Replay synchronized bytes before reading more PTY input. Replay can stop on an
+            // ordered graphics barrier even though all corresponding PTY bytes were already read.
+            if !state.parser.has_pending_input() {
+                match self.pty.reader().read(&mut buf[unprocessed..]) {
+                    // This is received on Windows/macOS when no more data is readable from the PTY.
+                    Ok(0) if unprocessed == 0 => break,
+                    Ok(got) => unprocessed += got,
+                    Err(err) => match err.kind() {
+                        ErrorKind::Interrupted | ErrorKind::WouldBlock => {
+                            // Go back to mio if we're caught up on parsing and the PTY would block.
+                            if unprocessed == 0 {
+                                break;
+                            }
+                        },
+                        _ => return Err(err),
                     },
-                    _ => return Err(err),
-                },
+                }
             }
 
             // Attempt to lock the terminal.
@@ -177,7 +180,7 @@ where
 
             // Assure we're not blocking the terminal too long unnecessarily. Bytes already read
             // from the PTY must be parsed before returning since they cannot be put back.
-            if should_yield_terminal(processed, unprocessed) {
+            if should_yield_terminal(processed, unprocessed) && !state.parser.has_pending_input() {
                 break;
             }
         }
@@ -263,7 +266,30 @@ where
 
                 // Handle synchronized update timeout.
                 if events.is_empty() && self.rx.peek().is_none() {
-                    state.parser.stop_sync(&mut *self.terminal.lock());
+                    let (request, graphics_options) = {
+                        let mut terminal = self.terminal.lock();
+                        state.parser.stop_sync(&mut *terminal);
+                        let request = terminal.take_graphics_request();
+                        let graphics_options = match &request {
+                            Some(request) => {
+                                terminal.begin_graphics_processing(request);
+                                terminal.graphics_processing_options_for(request)
+                            },
+                            None => terminal.graphics_processing_options(),
+                        };
+                        (request, graphics_options)
+                    };
+                    if let Some(request) = request {
+                        let command =
+                            process_request(request, graphics_options.0, graphics_options.1);
+                        self.terminal.lock_unfair().commit_graphics_command(command);
+                    }
+                    if state.parser.has_pending_input() {
+                        if let Err(err) = self.pty_read(&mut state, &mut buf, pipe.as_mut()) {
+                            error!("PTY read error while flushing synchronized update: {err}");
+                            break 'event_loop;
+                        }
+                    }
                     self.event_proxy.send_event(Event::Wakeup);
                     continue;
                 }

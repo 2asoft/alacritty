@@ -256,11 +256,22 @@ struct SyncState<T: Timeout> {
 
     /// Bytes read during the synchronized update.
     buffer: Vec<u8>,
+
+    /// Buffered bytes being replayed after a synchronized update.
+    replay: Vec<u8>,
+
+    /// Whether replay completion must report the end of synchronized mode.
+    unset_after_replay: bool,
 }
 
 impl<T: Timeout> Default for SyncState<T> {
     fn default() -> Self {
-        Self { buffer: Vec::with_capacity(SYNC_BUFFER_SIZE), timeout: Default::default() }
+        Self {
+            buffer: Vec::with_capacity(SYNC_BUFFER_SIZE),
+            replay: Vec::new(),
+            timeout: Default::default(),
+            unset_after_replay: false,
+        }
     }
 }
 
@@ -293,7 +304,11 @@ impl<T: Timeout> Processor<T> {
         &self.state.sync_state.timeout
     }
 
-    /// Process a new byte from the PTY.
+    /// Process bytes from the PTY without exposing ordered barriers.
+    ///
+    /// Handlers that return `true` from [`Handler::apc_end`] must use
+    /// [`Self::advance_until_terminated`] and complete each deferred operation
+    /// before continuing.
     #[inline]
     pub fn advance<H>(&mut self, handler: &mut H, bytes: &[u8])
     where
@@ -303,6 +318,9 @@ impl<T: Timeout> Processor<T> {
         while processed != bytes.len() {
             if self.state.sync_state.timeout.pending_timeout() {
                 processed += self.advance_sync(handler, &bytes[processed..]);
+                while self.has_pending_input() {
+                    self.advance_sync_replay(handler);
+                }
             } else {
                 let mut performer = Performer::new(&mut self.state, handler);
                 processed +=
@@ -323,12 +341,22 @@ impl<T: Timeout> Processor<T> {
     where
         H: Handler,
     {
+        if self.advance_sync_replay(handler) {
+            return 0;
+        }
+
         if self.state.sync_state.timeout.pending_timeout() {
             self.advance_sync(handler, bytes)
         } else {
             let mut performer = Performer::new(&mut self.state, handler);
             self.parser.advance_until_terminated(&mut performer, bytes)
         }
+    }
+
+    /// Whether synchronized input remains to be replayed.
+    #[inline]
+    pub fn has_pending_input(&self) -> bool {
+        !self.state.sync_state.replay.is_empty()
     }
 
     /// End a synchronized update.
@@ -344,44 +372,69 @@ impl<T: Timeout> Processor<T> {
     /// The `bsu_offset` parameter should be passed if the sync buffer contains
     /// a new BSU escape that is not part of the current synchronized
     /// update.
-    fn stop_sync_internal<H>(&mut self, handler: &mut H, bsu_offset: Option<usize>)
+    fn stop_sync_internal<H>(&mut self, handler: &mut H, bsu_offset: Option<usize>) -> bool
     where
         H: Handler,
     {
-        // Process all synchronized bytes.
-        //
-        // NOTE: We do not use `advance_until_terminated` here since BSU
-        // sequences are processed automatically during the synchronized
-        // update.
-        let buffer = mem::take(&mut self.state.sync_state.buffer);
+        let mut buffer = mem::take(&mut self.state.sync_state.buffer);
         let offset = bsu_offset.unwrap_or(buffer.len());
-        let mut performer = Performer::new(&mut self.state, handler);
-        self.parser.advance(&mut performer, &buffer[..offset]);
-        self.state.sync_state.buffer = buffer;
+        self.state.sync_state.replay.extend_from_slice(&buffer[..offset]);
 
         match bsu_offset {
-            // Just clear processed bytes if there is a new BSU.
-            //
-            // NOTE: We do not need to re-process for a new ESU since the `advance_sync`
-            // function checks for BSUs in reverse.
+            // Retain a new synchronized update after replaying the preceding update.
             Some(bsu_offset) => {
-                let new_len = self.state.sync_state.buffer.len() - bsu_offset;
-                self.state.sync_state.buffer.copy_within(bsu_offset.., 0);
-                self.state.sync_state.buffer.truncate(new_len);
+                buffer.copy_within(bsu_offset.., 0);
+                buffer.truncate(buffer.len() - bsu_offset);
+                self.state.sync_state.buffer = buffer;
             },
-            // Report mode and clear state if no new BSU is present.
+            // Report mode and clear state after all buffered bytes have been replayed.
             None => {
-                handler.unset_private_mode(NamedPrivateMode::SyncUpdate.into());
-                self.state.sync_state.timeout.clear_timeout();
-                self.state.sync_state.buffer.clear();
+                buffer.clear();
+                self.state.sync_state.buffer = buffer;
+                self.state.sync_state.unset_after_replay = true;
             },
         }
+
+        self.advance_sync_replay(handler)
+    }
+
+    /// Replay synchronized bytes up to the next ordered parser barrier.
+    fn advance_sync_replay<H>(&mut self, handler: &mut H) -> bool
+    where
+        H: Handler,
+    {
+        if self.state.sync_state.replay.is_empty() {
+            if mem::take(&mut self.state.sync_state.unset_after_replay) {
+                self.state.sync_state.timeout.clear_timeout();
+                handler.unset_private_mode(NamedPrivateMode::SyncUpdate.into());
+            }
+            return false;
+        }
+
+        let mut replay = mem::take(&mut self.state.sync_state.replay);
+        let (consumed, terminated) = {
+            let mut performer = Performer::new(&mut self.state, handler);
+            let consumed = self.parser.advance_until_terminated(&mut performer, &replay);
+            (consumed, performer.terminated)
+        };
+        replay.copy_within(consumed.., 0);
+        replay.truncate(replay.len() - consumed);
+        self.state.sync_state.replay = replay;
+
+        if self.state.sync_state.replay.is_empty()
+            && mem::take(&mut self.state.sync_state.unset_after_replay)
+        {
+            self.state.sync_state.timeout.clear_timeout();
+            handler.unset_private_mode(NamedPrivateMode::SyncUpdate.into());
+        }
+
+        terminated
     }
 
     /// Number of bytes in the synchronization buffer.
     #[inline]
     pub fn sync_bytes_count(&self) -> usize {
-        self.state.sync_state.buffer.len()
+        self.state.sync_state.buffer.len() + self.state.sync_state.replay.len()
     }
 
     /// Process a new byte during a synchronized update.
@@ -395,8 +448,11 @@ impl<T: Timeout> Processor<T> {
         // Advance sync parser or stop sync if we'd exceed the maximum buffer
         // size.
         if self.state.sync_state.buffer.len() + bytes.len() >= SYNC_BUFFER_SIZE - 1 {
-            // Terminate the synchronized update.
-            self.stop_sync_internal(handler, None);
+            // Terminate the synchronized update. Do not consume new bytes while
+            // replay is blocked on an ordered parser barrier.
+            if self.stop_sync_internal(handler, None) {
+                return 0;
+            }
 
             // Just parse the bytes normally.
             let mut performer = Performer::new(&mut self.state, handler);
@@ -2182,6 +2238,80 @@ mod tests {
         assert_eq!(handler.apc, b"Gi=1;AAAA");
         assert!(handler.apc_ended);
         assert_eq!(&bytes[consumed..], b"\\after");
+    }
+
+    #[test]
+    fn synchronized_updates_preserve_ordered_apc_barriers() {
+        let bytes = b"\x1b[?2026h\x1b_Gi=1;AAAA\x1b\\\x1b_Gi=2;BBBB\x1b\\\x1b[?2026l";
+        let mut parser = Processor::<TestSyncHandler>::new();
+        let mut handler = MockHandler::default();
+
+        let sync_start = parser.advance_until_terminated(&mut handler, bytes);
+        assert_eq!(&bytes[..sync_start], b"\x1b[?2026h");
+        let consumed = parser.advance_until_terminated(&mut handler, &bytes[sync_start..]);
+
+        assert_eq!(sync_start + consumed, bytes.len());
+        assert_eq!(handler.apc, b"Gi=1;AAAA");
+        assert!(parser.has_pending_input());
+
+        handler.apc.clear();
+        handler.apc_ended = false;
+        assert_eq!(parser.advance_until_terminated(&mut handler, b""), 0);
+        assert_eq!(handler.apc, b"Gi=2;BBBB");
+        assert!(handler.apc_ended);
+        assert!(parser.has_pending_input());
+
+        handler.apc.clear();
+        handler.apc_ended = false;
+        assert_eq!(parser.advance_until_terminated(&mut handler, b""), 0);
+        assert!(handler.apc.is_empty());
+        assert!(!handler.apc_ended);
+        assert!(!parser.has_pending_input());
+        assert_eq!(parser.state.sync_state.timeout.is_sync, 0);
+    }
+
+    #[test]
+    fn synchronized_timeout_preserves_ordered_apc_barriers() {
+        let mut parser = Processor::<TestSyncHandler>::new();
+        let mut handler = MockHandler::default();
+        parser.advance(&mut handler, b"\x1b[?2026h");
+        parser.advance(&mut handler, b"\x1b_Gi=1;AAAA\x1b\\\x1b_Gi=2;BBBB\x1b\\");
+
+        parser.stop_sync(&mut handler);
+
+        assert_eq!(handler.apc, b"Gi=1;AAAA");
+        assert!(parser.has_pending_input());
+        handler.apc.clear();
+        handler.apc_ended = false;
+        assert_eq!(parser.advance_until_terminated(&mut handler, b""), 0);
+        assert_eq!(handler.apc, b"Gi=2;BBBB");
+        assert!(parser.has_pending_input());
+        handler.apc.clear();
+        handler.apc_ended = false;
+        assert_eq!(parser.advance_until_terminated(&mut handler, b""), 0);
+        assert!(!parser.has_pending_input());
+        assert_eq!(parser.state.sync_state.timeout.is_sync, 0);
+    }
+
+    #[test]
+    fn synchronized_overflow_preserves_ordered_apc_barrier() {
+        let mut parser = Processor::<TestSyncHandler>::new();
+        let mut handler = MockHandler::default();
+        parser.advance(&mut handler, b"\x1b[?2026h");
+        parser.advance(&mut handler, b"\x1b_Gi=1;AAAA\x1b\\");
+        let overflow = vec![b'x'; SYNC_BUFFER_SIZE];
+
+        let consumed = parser.advance_until_terminated(&mut handler, &overflow);
+
+        assert_eq!(consumed, 0);
+        assert_eq!(handler.apc, b"Gi=1;AAAA");
+        assert!(parser.has_pending_input());
+        handler.apc.clear();
+        handler.apc_ended = false;
+        assert_eq!(parser.advance_until_terminated(&mut handler, &overflow), overflow.len());
+        assert!(handler.apc.is_empty());
+        assert!(!parser.has_pending_input());
+        assert_eq!(parser.state.sync_state.timeout.is_sync, 0);
     }
 
     #[test]
