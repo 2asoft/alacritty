@@ -45,6 +45,8 @@ Suggested commit: `refactor(graphics): separate command metadata from payloads`
 
 ### Work item 2: Stream base64 input
 
+Status: Complete.
+
 Depends on work item 1.
 
 1. Add `EncodedReader`.

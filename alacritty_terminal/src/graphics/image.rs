@@ -1,14 +1,23 @@
-use std::io::Cursor;
+use std::io::{Cursor, Read};
 use std::sync::Arc;
 
-use base64::Engine;
-use base64::engine::general_purpose::{STANDARD as Base64, STANDARD_NO_PAD as Base64Unpadded};
+use base64::engine::general_purpose::STANDARD as Base64;
+use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
+use base64::read::DecoderReader;
+use base64::{Engine, alphabet};
 use miniz_oxide::inflate::decompress_to_vec_zlib_with_limit;
 use png::{ColorType, Decoder, Limits, Transformations};
 
-use super::{Action, Command, Compression, Format, GraphicsError, Transmission, load_transport};
+use super::{
+    Action, Command, Compression, EncodedPayload, EncodedReader, Format, GraphicsError,
+    Transmission, load_transport,
+};
 
 const MAX_PNG_DECODER_OVERHEAD: usize = 1024 * 1024;
+const DIRECT_BASE64: GeneralPurpose = GeneralPurpose::new(
+    &alphabet::STANDARD,
+    GeneralPurposeConfig::new().with_decode_padding_mode(DecodePaddingMode::Indifferent),
+);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PixelBuffer {
@@ -67,7 +76,7 @@ pub enum ProcessedCommand {
 
 pub(crate) fn process_command(
     command: Command,
-    payload: Vec<u8>,
+    payload: impl Into<EncodedPayload>,
     storage_limit: usize,
     local_transmission: bool,
 ) -> ProcessedCommand {
@@ -75,6 +84,7 @@ pub(crate) fn process_command(
         return ProcessedCommand::Error { command: Some(command), error: GraphicsError::Invalid };
     }
 
+    let payload = payload.into();
     let action = command.action.unwrap_or_default();
     if !matches!(
         action,
@@ -86,12 +96,12 @@ pub(crate) fn process_command(
     }
 
     let source = match command.transmission.unwrap_or_default() {
-        Transmission::Direct => Base64
-            .decode(&payload)
-            .or_else(|_| Base64Unpadded.decode(&payload))
-            .map_err(|_| GraphicsError::Decode),
+        Transmission::Direct => direct_decode_policy(&command, storage_limit).and_then(|policy| {
+            decode_base64(payload, &DIRECT_BASE64, policy, GraphicsError::Decode)
+        }),
         _ if !local_transmission => Err(GraphicsError::LocalTransmissionDisabled),
-        transmission => load_transport(transmission, payload, &command, storage_limit),
+        transmission => decode_local_name(payload)
+            .and_then(|name| load_transport(transmission, name, &command, storage_limit)),
     };
     let source = match source {
         Ok(source) => source,
@@ -101,6 +111,109 @@ pub(crate) fn process_command(
     match decode_source(&command, source, storage_limit) {
         Ok(image) => ProcessedCommand::Decoded { command, image },
         Err(error) => ProcessedCommand::Error { command: Some(command), error },
+    }
+}
+
+#[derive(Clone, Copy)]
+enum DecodeOverflow {
+    Error(GraphicsError),
+    Truncate,
+}
+
+#[derive(Clone, Copy)]
+struct DecodePolicy {
+    limit: usize,
+    overflow: DecodeOverflow,
+}
+
+fn direct_decode_policy(
+    command: &Command,
+    storage_limit: usize,
+) -> Result<DecodePolicy, GraphicsError> {
+    if command.compression.is_some() || command.format == Some(Format::Png) {
+        let limit =
+            storage_limit.checked_add(MAX_PNG_DECODER_OVERHEAD).ok_or(GraphicsError::TooLarge)?;
+        return Ok(DecodePolicy { limit, overflow: DecodeOverflow::Error(GraphicsError::NoSpace) });
+    }
+
+    let channels = match command.format.unwrap_or_default() {
+        Format::Rgb => 3,
+        Format::Rgba => 4,
+        Format::Png => return Err(GraphicsError::Invalid),
+        Format::Unknown(_) => {
+            return Ok(DecodePolicy {
+                limit: storage_limit,
+                overflow: DecodeOverflow::Error(GraphicsError::Invalid),
+            });
+        },
+    };
+    let source_size = raw_size(command, channels)?;
+    let canonical_size = raw_size(command, 4)?;
+    if canonical_size > storage_limit {
+        return Ok(DecodePolicy {
+            limit: storage_limit,
+            overflow: DecodeOverflow::Error(GraphicsError::NoSpace),
+        });
+    }
+    let overflow = if command.action == Some(Action::TransmitFrame) {
+        DecodeOverflow::Truncate
+    } else {
+        DecodeOverflow::Error(GraphicsError::Invalid)
+    };
+    Ok(DecodePolicy { limit: source_size, overflow })
+}
+
+fn decode_local_name(payload: EncodedPayload) -> Result<Vec<u8>, GraphicsError> {
+    let EncodedPayload::Single(payload) = payload else {
+        return Err(GraphicsError::Invalid);
+    };
+    Base64.decode(payload).map_err(|_| GraphicsError::Invalid)
+}
+
+fn decode_base64<E: Engine>(
+    payload: EncodedPayload,
+    engine: &E,
+    policy: DecodePolicy,
+    invalid: GraphicsError,
+) -> Result<Vec<u8>, GraphicsError> {
+    let read_limit = policy.limit.checked_add(1).ok_or(GraphicsError::TooLarge)?;
+    // Base64 cannot emit more than three bytes per encoded quartet. Grow as encoded
+    // blocks are consumed, with a capacity ceiling derived from the actual input.
+    let capacity_bound = payload
+        .encoded_len()?
+        .div_ceil(4)
+        .checked_mul(3)
+        .and_then(|size| size.checked_add(1))
+        .ok_or(GraphicsError::TooLarge)?
+        .min(read_limit);
+    let reader = EncodedReader::from(payload);
+    let mut decoder = DecoderReader::new(reader, engine);
+    let mut decoded = Vec::new();
+    while decoded.len() < capacity_bound {
+        if decoded.len() == decoded.capacity() {
+            let capacity = decoded.capacity().saturating_mul(2).max(8192).min(capacity_bound);
+            decoded.reserve_exact(capacity - decoded.len());
+        }
+        let start = decoded.len();
+        let end = start.saturating_add(8192).min(decoded.capacity()).min(capacity_bound);
+        decoded.resize(end, 0);
+        let count = decoder.read(&mut decoded[start..]).map_err(|_| invalid)?;
+        decoded.truncate(start + count);
+        if count == 0 {
+            break;
+        }
+    }
+    if decoded.len() <= policy.limit {
+        return Ok(decoded);
+    }
+
+    std::io::copy(&mut decoder, &mut std::io::sink()).map_err(|_| invalid)?;
+    match policy.overflow {
+        DecodeOverflow::Error(error) => Err(error),
+        DecodeOverflow::Truncate => {
+            decoded.truncate(policy.limit);
+            Ok(decoded)
+        },
     }
 }
 
@@ -349,6 +462,23 @@ mod tests {
     }
 
     #[test]
+    fn malformed_local_transport_name_retains_einval() {
+        let command = Command {
+            transmission: Some(Transmission::File),
+            format: Some(Format::Rgba),
+            width: Some(1),
+            height: Some(1),
+            ..Default::default()
+        };
+        for payload in [b"%%%".as_slice(), b"L3RtcC9pbWFnZQ".as_slice()] {
+            assert!(matches!(
+                process_command(command.clone(), payload.to_vec(), 4, true),
+                ProcessedCommand::Error { error: GraphicsError::Invalid, .. }
+            ));
+        }
+    }
+
+    #[test]
     fn converts_rgb_to_canonical_rgba() {
         let image = decoded(direct(Format::Rgb, 2, 1, &[1, 2, 3, 4, 5, 6]), 8).unwrap();
         assert_eq!(image.bytes(), &[1, 2, 3, 255, 4, 5, 6, 255]);
@@ -432,6 +562,30 @@ mod tests {
             decoded(direct(Format::Rgba, 1, 1, &[1, 2, 3, 4]), 3),
             Err(GraphicsError::NoSpace)
         );
+    }
+
+    #[test]
+    fn classifies_excess_raw_data_without_retaining_it() {
+        let excess = vec![7; 1024 * 1024];
+        assert_eq!(decoded(direct(Format::Rgba, 1, 1, &excess), 4), Err(GraphicsError::Invalid));
+
+        let mut frame = direct(Format::Rgba, 1, 1, &excess);
+        frame.action = Some(Action::TransmitFrame);
+        assert_eq!(decoded(frame, 4).unwrap().bytes(), &[7, 7, 7, 7]);
+    }
+
+    #[test]
+    fn invalid_base64_after_excess_data_keeps_decode_precedence() {
+        let input = TestCommand {
+            command: Command {
+                format: Some(Format::Rgba),
+                width: Some(1),
+                height: Some(1),
+                ..Default::default()
+            },
+            payload: b"AQIDBAUG%%%".to_vec(),
+        };
+        assert_eq!(decoded(input, 4), Err(GraphicsError::Decode));
     }
 
     #[test]

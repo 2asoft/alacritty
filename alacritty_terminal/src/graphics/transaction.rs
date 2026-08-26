@@ -1,3 +1,5 @@
+use std::io::{self, Cursor, Read};
+
 use super::{Action, Command, GraphicsError, ParsedCommand, ProcessedCommand, process_command};
 
 // Coalesce wire chunks so metadata depends on encoded bytes, never on APC count.
@@ -7,6 +9,56 @@ const ENCODED_BLOCK_BYTES: usize = 128 * 1024;
 pub enum EncodedPayload {
     Single(Vec<u8>),
     Chunks(Vec<Vec<u8>>),
+}
+
+impl EncodedPayload {
+    pub(crate) fn encoded_len(&self) -> Result<usize, GraphicsError> {
+        match self {
+            Self::Single(payload) => Ok(payload.len()),
+            Self::Chunks(chunks) => chunks.iter().try_fold(0usize, |size, chunk| {
+                size.checked_add(chunk.len()).ok_or(GraphicsError::TooLarge)
+            }),
+        }
+    }
+}
+
+impl From<Vec<u8>> for EncodedPayload {
+    fn from(payload: Vec<u8>) -> Self {
+        Self::Single(payload)
+    }
+}
+
+pub(crate) struct EncodedReader {
+    chunks: std::vec::IntoIter<Vec<u8>>,
+    current: Cursor<Vec<u8>>,
+}
+
+impl From<EncodedPayload> for EncodedReader {
+    fn from(payload: EncodedPayload) -> Self {
+        let chunks = match payload {
+            EncodedPayload::Single(payload) => vec![payload],
+            EncodedPayload::Chunks(chunks) => chunks,
+        };
+        Self { chunks: chunks.into_iter(), current: Cursor::new(Vec::new()) }
+    }
+}
+
+impl Read for EncodedReader {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        if output.is_empty() {
+            return Ok(0);
+        }
+        loop {
+            let read = self.current.read(output)?;
+            if read != 0 {
+                return Ok(read);
+            }
+            let Some(chunk) = self.chunks.next() else {
+                return Ok(0);
+            };
+            self.current = Cursor::new(chunk);
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -180,24 +232,7 @@ pub fn process_request(
         GraphicsRequest::Invalid { command, error } => {
             return ProcessedCommand::Error { command, error };
         },
-        GraphicsRequest::Command { command, payload: EncodedPayload::Single(payload) } => {
-            (command, payload)
-        },
-        GraphicsRequest::Command { command, payload: EncodedPayload::Chunks(chunks) } => {
-            let Some(encoded_bytes) =
-                chunks.iter().try_fold(0usize, |total, chunk| total.checked_add(chunk.len()))
-            else {
-                return ProcessedCommand::Error {
-                    command: Some(command),
-                    error: GraphicsError::TooLarge,
-                };
-            };
-            let mut payload = Vec::with_capacity(encoded_bytes);
-            for chunk in chunks {
-                payload.extend_from_slice(&chunk);
-            }
-            (command, payload)
-        },
+        GraphicsRequest::Command { command, payload } => (command, payload),
     };
     process_command(command, payload, storage_limit, local_transmission)
 }
@@ -212,6 +247,73 @@ mod tests {
 
     fn parsed(command: Command, payload: impl Into<Vec<u8>>) -> ParsedCommand {
         ParsedCommand { command, payload: payload.into() }
+    }
+
+    fn rgba_request(chunks: Vec<Vec<u8>>) -> GraphicsRequest {
+        GraphicsRequest::Command {
+            command: Command {
+                format: Some(Format::Rgba),
+                width: Some(1),
+                height: Some(1),
+                ..Default::default()
+            },
+            payload: EncodedPayload::Chunks(chunks),
+        }
+    }
+
+    #[test]
+    fn encoded_reader_crosses_empty_and_one_byte_chunks() {
+        let payload = EncodedPayload::Chunks(vec![vec![], vec![1], vec![2, 3], vec![], vec![4]]);
+        let mut reader = EncodedReader::from(payload);
+        let mut output = Vec::new();
+        let mut byte = [0];
+        while reader.read(&mut byte).unwrap() != 0 {
+            output.push(byte[0]);
+        }
+        assert_eq!(output, [1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn decoder_streams_across_one_byte_chunks() {
+        let chunks = b"AQIDBA==".iter().map(|byte| vec![*byte]).collect();
+        match process_request(rgba_request(chunks), 4, true) {
+            ProcessedCommand::Decoded { image, .. } => assert_eq!(image.bytes(), &[1, 2, 3, 4]),
+            result => panic!("unexpected result: {result:?}"),
+        }
+    }
+
+    #[test]
+    fn decoder_rejects_intermediate_padding() {
+        assert!(matches!(
+            process_request(rgba_request(vec![b"AQ==".to_vec(), b"ID".to_vec()]), 4, true),
+            ProcessedCommand::Error { error: GraphicsError::Decode, .. }
+        ));
+    }
+
+    #[test]
+    fn decoder_accepts_unpadded_final_chunk() {
+        match process_request(rgba_request(vec![b"AQID".to_vec(), b"BA".to_vec()]), 4, true) {
+            ProcessedCommand::Decoded { image, .. } => assert_eq!(image.bytes(), &[1, 2, 3, 4]),
+            result => panic!("unexpected result: {result:?}"),
+        }
+    }
+
+    #[test]
+    fn decoded_limit_overflow_fails_closed() {
+        let request = GraphicsRequest::Command {
+            command: Command {
+                format: Some(Format::Rgba),
+                compression: Some(crate::graphics::Compression::Zlib),
+                width: Some(1),
+                height: Some(1),
+                ..Default::default()
+            },
+            payload: EncodedPayload::Single(b"AQIDBA==".to_vec()),
+        };
+        assert!(matches!(process_request(request, usize::MAX, true), ProcessedCommand::Error {
+            error: GraphicsError::TooLarge,
+            ..
+        }));
     }
 
     #[test]
@@ -250,7 +352,7 @@ mod tests {
     }
 
     #[test]
-    fn assembles_chunks_before_decoding() {
+    fn streams_chunks_before_decoding() {
         let bytes = Base64.encode([1, 2, 3, 4]);
         let split = 4;
         let first = parsed(

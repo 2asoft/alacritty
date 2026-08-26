@@ -23,6 +23,6 @@ pub use placeholder::{PLACEHOLDER, PlaceholderCell, decode_placeholder};
 pub use placement::{Placement, PlacementHandle, RenderableGraphic};
 pub(crate) use placement::{PlacementInsert, PlacementSpec, Placements};
 pub use storage::{GraphicsState, Image, ImageHandle, StoreOutcome};
-pub(crate) use transaction::EncodedPayload;
+pub(crate) use transaction::{EncodedPayload, EncodedReader};
 pub use transaction::{GraphicsRequest, PendingResult, PendingTransmission, process_request};
 pub(crate) use transport::load_transport;

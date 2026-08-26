@@ -2,18 +2,14 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as Base64;
-
 use super::{Command, GraphicsError, Transmission};
 
 pub(crate) fn load_transport(
     transmission: Transmission,
-    payload: Vec<u8>,
+    name: Vec<u8>,
     command: &Command,
     limit: usize,
 ) -> Result<Vec<u8>, GraphicsError> {
-    let name = Base64.decode(payload).map_err(|_| GraphicsError::Invalid)?;
     match transmission {
         Transmission::Direct => Err(GraphicsError::Invalid),
         Transmission::File => read_file(native_path(name), command, limit),
@@ -234,7 +230,7 @@ mod tests {
         };
         #[cfg(not(unix))]
         let bytes = path.to_string_lossy().as_bytes();
-        EncodedCommand { command: Command::default(), payload: Base64.encode(bytes).into_bytes() }
+        EncodedCommand { command: Command::default(), payload: bytes.to_vec() }
     }
 
     fn load(
@@ -286,10 +282,8 @@ mod tests {
         let mut file = unsafe { File::from_raw_fd(descriptor) };
         file.write_all(&[1, 2, 3, 4]).unwrap();
         drop(file);
-        let command = EncodedCommand {
-            command: Command::default(),
-            payload: Base64.encode(name.as_bytes()).into_bytes(),
-        };
+        let command =
+            EncodedCommand { command: Command::default(), payload: name.as_bytes().to_vec() };
 
         assert_eq!(load(Transmission::SharedMemory, &command, 4).unwrap(), [1, 2, 3, 4]);
         assert_eq!(unsafe { libc::shm_open(c_name.as_ptr(), libc::O_RDONLY, 0) }, -1);
@@ -312,7 +306,7 @@ mod tests {
         drop(file);
         let command = EncodedCommand {
             command: Command { data_size: Some(4), ..Default::default() },
-            payload: Base64.encode(name.as_bytes()).into_bytes(),
+            payload: name.as_bytes().to_vec(),
         };
         assert_eq!(load(Transmission::SharedMemory, &command, 4), Err(GraphicsError::NoData));
     }

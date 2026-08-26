@@ -1,6 +1,6 @@
 # Kitty graphics maintenance measurements
 
-`baseline.json` records the pre-maintenance working-set and scaling observations from the accepted maintenance plan. Regenerate a comparison with:
+`baseline.json` records the pre-maintenance working-set and scaling observations from the accepted maintenance plan. `ownership.json` records the payload-ownership milestone. `streaming.json` records the streaming-base64 milestone. Between the latter two runs, median peak RSS fell from 223,104 KiB to 157,528 KiB for RGBA and from 332,400 KiB to 245,460 KiB for RGB on the same host. Source inspection proves that the streaming path has no concatenated encoded body; the RSS reduction corroborates the structural result but does not independently prove allocation identity. Regenerate a comparison with:
 
 ```sh
 scripts/kitty-graphics-measurements.sh target/kitty-graphics-measurements.json
