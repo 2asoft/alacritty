@@ -26,6 +26,8 @@ Suggested commit: `test(graphics): measure deferred graphics working sets`
 
 ### Work item 1: Move parser payload ownership
 
+Status: Complete.
+
 1. Add `ParsedCommand`.
 2. Move payload from parser with `mem::take`.
 3. Remove payload and the terminal-derived anchor from `Command`.

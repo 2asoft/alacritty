@@ -65,33 +65,15 @@ pub enum ProcessedCommand {
     Error { command: Option<Command>, error: GraphicsError },
 }
 
-impl ProcessedCommand {
-    pub fn set_anchor(&mut self, anchor: Option<crate::index::Point>) {
-        let command = match self {
-            Self::Decoded { command, .. } | Self::Metadata(command) => Some(command),
-            Self::Error { command, .. } => command.as_mut(),
-        };
-        if let Some(command) = command {
-            command.anchor = anchor.or(command.anchor);
-        }
-    }
-}
-
-pub fn process_command(
-    command: Result<Command, GraphicsError>,
+pub(crate) fn process_command(
+    command: Command,
+    payload: Vec<u8>,
     storage_limit: usize,
     local_transmission: bool,
 ) -> ProcessedCommand {
-    let command = match command {
-        Ok(command) if command.image_id.is_some() && command.image_number.is_some() => {
-            return ProcessedCommand::Error {
-                command: Some(command),
-                error: GraphicsError::Invalid,
-            };
-        },
-        Ok(command) => command,
-        Err(error) => return ProcessedCommand::Error { command: None, error },
-    };
+    if command.image_id.is_some() && command.image_number.is_some() {
+        return ProcessedCommand::Error { command: Some(command), error: GraphicsError::Invalid };
+    }
 
     let action = command.action.unwrap_or_default();
     if !matches!(
@@ -105,11 +87,11 @@ pub fn process_command(
 
     let source = match command.transmission.unwrap_or_default() {
         Transmission::Direct => Base64
-            .decode(&command.payload)
-            .or_else(|_| Base64Unpadded.decode(&command.payload))
+            .decode(&payload)
+            .or_else(|_| Base64Unpadded.decode(&payload))
             .map_err(|_| GraphicsError::Decode),
         _ if !local_transmission => Err(GraphicsError::LocalTransmissionDisabled),
-        transmission => load_transport(transmission, &command, storage_limit),
+        transmission => load_transport(transmission, payload, &command, storage_limit),
     };
     let source = match source {
         Ok(source) => source,
@@ -274,13 +256,35 @@ fn decode_png(source: &[u8], storage_limit: usize) -> Result<PixelBuffer, Graphi
 mod tests {
     use super::*;
 
-    fn direct(format: Format, width: u32, height: u32, bytes: &[u8]) -> Command {
-        Command {
-            format: Some(format),
-            width: Some(width),
-            height: Some(height),
+    #[derive(Clone)]
+    struct TestCommand {
+        command: Command,
+        payload: Vec<u8>,
+    }
+
+    impl std::ops::Deref for TestCommand {
+        type Target = Command;
+
+        fn deref(&self) -> &Self::Target {
+            &self.command
+        }
+    }
+
+    impl std::ops::DerefMut for TestCommand {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            &mut self.command
+        }
+    }
+
+    fn direct(format: Format, width: u32, height: u32, bytes: &[u8]) -> TestCommand {
+        TestCommand {
+            command: Command {
+                format: Some(format),
+                width: Some(width),
+                height: Some(height),
+                ..Default::default()
+            },
             payload: Base64.encode(bytes).into_bytes(),
-            ..Default::default()
         }
     }
 
@@ -300,8 +304,8 @@ mod tests {
         output
     }
 
-    fn decoded(command: Command, limit: usize) -> Result<PixelBuffer, GraphicsError> {
-        match process_command(Ok(command), limit, true) {
+    fn decoded(input: TestCommand, limit: usize) -> Result<PixelBuffer, GraphicsError> {
+        match process_command(input.command, input.payload, limit, true) {
             ProcessedCommand::Decoded { image, .. } => Ok(image),
             ProcessedCommand::Error { error, .. } => Err(error),
             ProcessedCommand::Metadata(_) => panic!("expected decoded image"),
@@ -310,16 +314,14 @@ mod tests {
 
     #[test]
     fn applies_default_transmit_rgba_and_requires_raw_dimensions() {
-        let command = Command {
-            payload: Base64.encode([1, 2, 3, 4]).into_bytes(),
-            width: Some(1),
-            height: Some(1),
-            ..Default::default()
-        };
+        let command = direct(Format::Rgba, 1, 1, &[1, 2, 3, 4]);
         assert_eq!(decoded(command, 4).unwrap().bytes(), &[1, 2, 3, 4]);
         assert_eq!(
             decoded(
-                Command { payload: Base64.encode([1, 2, 3, 4]).into_bytes(), ..Default::default() },
+                TestCommand {
+                    command: Command::default(),
+                    payload: Base64.encode([1, 2, 3, 4]).into_bytes(),
+                },
                 4
             ),
             Err(GraphicsError::Invalid)
@@ -329,19 +331,21 @@ mod tests {
     #[test]
     fn local_transport_gate_never_blocks_direct_payloads() {
         let direct = direct(Format::Rgba, 1, 1, &[1, 2, 3, 4]);
-        assert!(matches!(process_command(Ok(direct), 4, false), ProcessedCommand::Decoded { .. }));
+        assert!(matches!(
+            process_command(direct.command, direct.payload, 4, false),
+            ProcessedCommand::Decoded { .. }
+        ));
         let file = Command {
             transmission: Some(Transmission::File),
             format: Some(Format::Rgba),
             width: Some(1),
             height: Some(1),
-            payload: Base64.encode("/tmp/image").into_bytes(),
             ..Default::default()
         };
-        assert!(matches!(process_command(Ok(file), 4, false), ProcessedCommand::Error {
-            error: GraphicsError::LocalTransmissionDisabled,
-            ..
-        }));
+        assert!(matches!(
+            process_command(file, Base64.encode("/tmp/image").into_bytes(), 4, false),
+            ProcessedCommand::Error { error: GraphicsError::LocalTransmissionDisabled, .. }
+        ));
     }
 
     #[test]
@@ -373,7 +377,7 @@ mod tests {
             ..Default::default()
         };
 
-        assert!(matches!(process_command(Ok(command), 4, true), ProcessedCommand::Error {
+        assert!(matches!(process_command(command, Vec::new(), 4, true), ProcessedCommand::Error {
             error: GraphicsError::Invalid,
             ..
         }));
@@ -386,7 +390,7 @@ mod tests {
             command.image_id = image_id;
             command.image_number = image_number;
             assert!(matches!(
-                process_command(Ok(command), 4, true),
+                process_command(command.command, command.payload, 4, true),
                 ProcessedCommand::Decoded { .. }
             ));
         }
@@ -403,11 +407,15 @@ mod tests {
                 width: Some(1),
                 height: Some(1),
                 more: Some(true),
-                payload: Base64.encode("/alacritty-kitty-missing-object").into_bytes(),
                 ..Default::default()
             };
             assert!(matches!(
-                process_command(Ok(command), 4, true),
+                process_command(
+                    command,
+                    Base64.encode("/alacritty-kitty-missing-object").into_bytes(),
+                    4,
+                    true,
+                ),
                 ProcessedCommand::Error { .. }
             ));
         }

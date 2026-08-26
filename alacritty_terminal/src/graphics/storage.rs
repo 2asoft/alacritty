@@ -8,7 +8,8 @@ use crate::index::{Line, Point};
 use super::{
     Action, AnimationFrame, AnimationState, Command, DEFAULT_FRAME_GAP_MS, FrameComposition,
     GraphicsError, MAX_FRAMES_PER_BUFFER, MAX_FRAMES_PER_IMAGE, PixelBuffer, Placement,
-    PlacementHandle, PlacementInsert, Placements, RenderableGraphic, blank_frame, compose,
+    PlacementHandle, PlacementInsert, PlacementSpec, Placements, RenderableGraphic, blank_frame,
+    compose,
 };
 
 pub const MAX_IMAGES_PER_BUFFER: usize = 4096;
@@ -516,15 +517,33 @@ impl GraphicsState {
         if !self.images.contains_key(&handle) {
             return Err(GraphicsError::NotFound);
         }
-        let mut placement = command.clone();
-        if image_id.is_none() {
-            placement.placement_id = None;
-        }
-        if command.unicode_placeholder.unwrap_or(0) != 0 {
-            placement.columns = Some(span.0);
-            placement.rows = Some(span.1);
-        }
-        let inserted = self.placements.insert(handle, image_id, &placement, anchor, span)?;
+        let placement = PlacementSpec {
+            placement_id: image_id.and(command.placement_id),
+            source_x: command.x.unwrap_or(0),
+            source_y: command.y.unwrap_or(0),
+            source_width: command.crop_width,
+            source_height: command.crop_height,
+            x_offset: command.x_offset.unwrap_or(0),
+            y_offset: command.y_offset.unwrap_or(0),
+            columns: if command.unicode_placeholder.unwrap_or(0) != 0 {
+                Some(span.0)
+            } else {
+                command.columns
+            },
+            rows: if command.unicode_placeholder.unwrap_or(0) != 0 {
+                Some(span.1)
+            } else {
+                command.rows
+            },
+            cell_span: span,
+            z_index: command.z_index.unwrap_or(0),
+            virtual_placement: command.unicode_placeholder.unwrap_or(0) != 0,
+            parent_image_id: command.parent_image_id,
+            parent_placement_id: command.parent_placement_id,
+            horizontal_cells: command.horizontal_offset.unwrap_or(0),
+            vertical_cells: command.vertical_offset.unwrap_or(0),
+        };
+        let inserted = self.placements.insert(handle, image_id, placement, anchor)?;
         self.serial = serial;
         self.images.get_mut(&handle).ok_or(GraphicsError::NotFound)?.last_used_serial = serial;
         Ok(inserted)

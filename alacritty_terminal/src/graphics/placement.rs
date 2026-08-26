@@ -3,7 +3,7 @@ use std::num::NonZeroU32;
 
 use crate::index::{Line, Point};
 
-use super::{Command, GraphicsError, ImageHandle, PixelBuffer};
+use super::{GraphicsError, ImageHandle, PixelBuffer};
 
 pub const MAX_PLACEMENTS_PER_BUFFER: usize = 65_536;
 pub const MAX_RELATIVE_PLACEMENT_DEPTH: usize = 8;
@@ -15,6 +15,26 @@ pub struct PlacementHandle(pub(crate) u64);
 pub(crate) struct PlacementInsert {
     pub handle: PlacementHandle,
     pub orphaned_relative_images: Vec<ImageHandle>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PlacementSpec {
+    pub placement_id: Option<u32>,
+    pub source_x: u32,
+    pub source_y: u32,
+    pub source_width: Option<u32>,
+    pub source_height: Option<u32>,
+    pub x_offset: u32,
+    pub y_offset: u32,
+    pub columns: Option<u32>,
+    pub rows: Option<u32>,
+    pub cell_span: (u32, u32),
+    pub z_index: i32,
+    pub virtual_placement: bool,
+    pub parent_image_id: Option<u32>,
+    pub parent_placement_id: Option<u32>,
+    pub horizontal_cells: i32,
+    pub vertical_cells: i32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -304,19 +324,18 @@ impl Placements {
         &mut self,
         image: ImageHandle,
         image_id: Option<NonZeroU32>,
-        command: &Command,
+        spec: PlacementSpec,
         anchor: Point,
-        cell_span: (u32, u32),
     ) -> Result<PlacementInsert, GraphicsError> {
-        let placement_id = NonZeroU32::new(command.placement_id.unwrap_or(0));
+        let placement_id = NonZeroU32::new(spec.placement_id.unwrap_or(0));
         let named = image_id.zip(placement_id);
         let replaced = named.and_then(|key| self.named.get(&key).copied());
-        let parent_image = NonZeroU32::new(command.parent_image_id.unwrap_or(0));
-        let parent_placement = NonZeroU32::new(command.parent_placement_id.unwrap_or(0));
+        let parent_image = NonZeroU32::new(spec.parent_image_id.unwrap_or(0));
+        let parent_placement = NonZeroU32::new(spec.parent_placement_id.unwrap_or(0));
         let relative = match parent_image {
             None if parent_placement.is_none() => None,
             Some(parent_image) => {
-                if command.unicode_placeholder.unwrap_or(0) != 0 {
+                if spec.virtual_placement {
                     return Err(GraphicsError::Invalid);
                 }
                 let parent = match parent_placement {
@@ -356,8 +375,8 @@ impl Placements {
                 }
                 Some(RelativePlacement {
                     parent,
-                    horizontal_cells: command.horizontal_offset.unwrap_or(0),
-                    vertical_cells: command.vertical_offset.unwrap_or(0),
+                    horizontal_cells: spec.horizontal_cells,
+                    vertical_cells: spec.vertical_cells,
                 })
             },
             None => return Err(GraphicsError::Invalid),
@@ -376,17 +395,17 @@ impl Placements {
             image_id,
             placement_id,
             anchor,
-            source_x: command.x.unwrap_or(0),
-            source_y: command.y.unwrap_or(0),
-            source_width: NonZeroU32::new(command.crop_width.unwrap_or(0)).map(NonZeroU32::get),
-            source_height: NonZeroU32::new(command.crop_height.unwrap_or(0)).map(NonZeroU32::get),
-            x_offset: command.x_offset.unwrap_or(0),
-            y_offset: command.y_offset.unwrap_or(0),
-            columns: NonZeroU32::new(command.columns.unwrap_or(0)).map(NonZeroU32::get),
-            rows: NonZeroU32::new(command.rows.unwrap_or(0)).map(NonZeroU32::get),
-            cell_span,
-            z_index: command.z_index.unwrap_or(0),
-            virtual_placement: command.unicode_placeholder.unwrap_or(0) != 0,
+            source_x: spec.source_x,
+            source_y: spec.source_y,
+            source_width: NonZeroU32::new(spec.source_width.unwrap_or(0)).map(NonZeroU32::get),
+            source_height: NonZeroU32::new(spec.source_height.unwrap_or(0)).map(NonZeroU32::get),
+            x_offset: spec.x_offset,
+            y_offset: spec.y_offset,
+            columns: spec.columns.filter(|columns| *columns != 0),
+            rows: spec.rows.filter(|rows| *rows != 0),
+            cell_span: spec.cell_span,
+            z_index: spec.z_index,
+            virtual_placement: spec.virtual_placement,
             relative,
             clip_region: None,
             creation_serial: self.serial,

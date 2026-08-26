@@ -1,7 +1,5 @@
 use std::{mem, str};
 
-use crate::index::Point;
-
 pub const MAX_GRAPHICS_CONTROL_BYTES: usize = 4096;
 // Kitty's current graphics client uses 128 KiB chunks despite the protocol's 4 KiB guidance.
 pub const MAX_GRAPHICS_PAYLOAD_BYTES: usize = 128 * 1024;
@@ -77,7 +75,11 @@ pub struct Command {
     pub parent_placement_id: Option<u32>,
     pub horizontal_offset: Option<i32>,
     pub vertical_offset: Option<i32>,
-    pub anchor: Option<Point>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ParsedCommand {
+    pub command: Command,
     pub payload: Vec<u8>,
 }
 
@@ -176,80 +178,83 @@ impl GraphicsApcParser {
         }
     }
 
-    pub fn end(&mut self) -> Option<Result<Command, GraphicsError>> {
+    pub(crate) fn end(&mut self) -> Option<Result<ParsedCommand, GraphicsError>> {
         let state = mem::take(&mut self.state);
         let result = match state {
             State::Ignore | State::Prefix => None,
             State::Overflow(error) => Some(Err(error)),
-            State::Control | State::Payload => Some(self.parse_command()),
+            State::Control | State::Payload => {
+                let payload = mem::take(&mut self.payload);
+                Some(parse_command(&self.control, payload))
+            },
         };
         self.control.clear();
         self.payload.clear();
         result
     }
+}
 
-    fn parse_command(&self) -> Result<Command, GraphicsError> {
-        let mut command = Command { payload: self.payload.clone(), ..Default::default() };
-        if self.control.is_empty() {
-            return Ok(command);
-        }
-
-        for property in self.control.split(|byte| *byte == b',') {
-            let separator = property
-                .iter()
-                .position(|byte| *byte == b'=')
-                .ok_or(GraphicsError::InvalidControl)?;
-            let (key, value) = property.split_at(separator);
-            let value = &value[1..];
-            if key.len() != 1
-                || !key[0].is_ascii_alphabetic()
-                || value.is_empty()
-                || value.contains(&b'=')
-            {
-                return Err(GraphicsError::InvalidControl);
-            }
-
-            let unsigned = || parse_u32(value);
-            let signed = || parse_i32(value);
-            match key[0] {
-                b'a' => command.action = Some(parse_action(value)?),
-                b'q' => command.quiet = Some(parse_u32(value)?.min(2) as u8),
-                b'f' => command.format = Some(parse_format(value)?),
-                b't' => command.transmission = Some(parse_transmission(value)?),
-                b'o' if value == b"z" => command.compression = Some(Compression::Zlib),
-                b'o' => return Err(GraphicsError::InvalidControl),
-                b'd' => command.delete = Some(parse_delete(value)?),
-                b's' => command.width = Some(unsigned()?),
-                b'v' => command.height = Some(unsigned()?),
-                b'S' => command.data_size = Some(unsigned()?),
-                b'O' => command.data_offset = Some(unsigned()?),
-                b'i' => command.image_id = Some(unsigned()?),
-                b'I' => command.image_number = Some(unsigned()?),
-                b'p' => command.placement_id = Some(unsigned()?),
-                b'm' => command.more = Some(parse_range(value, 0..=1)? != 0),
-                b'N' => command.usage = Some(unsigned()?),
-                b'x' => command.x = Some(unsigned()?),
-                b'y' => command.y = Some(unsigned()?),
-                b'w' => command.crop_width = Some(unsigned()?),
-                b'h' => command.crop_height = Some(unsigned()?),
-                b'X' => command.x_offset = Some(unsigned()?),
-                b'Y' => command.y_offset = Some(unsigned()?),
-                b'c' => command.columns = Some(unsigned()?),
-                b'r' => command.rows = Some(unsigned()?),
-                b'C' => command.cursor_policy = Some(unsigned()?),
-                b'U' => command.unicode_placeholder = Some(unsigned()?),
-                b'z' => command.z_index = Some(signed()?),
-                b'P' => command.parent_image_id = Some(unsigned()?),
-                b'Q' => command.parent_placement_id = Some(unsigned()?),
-                b'H' => command.horizontal_offset = Some(signed()?),
-                b'V' => command.vertical_offset = Some(signed()?),
-                _ => (),
-            }
-        }
-
-        Ok(command)
+fn parse_command(control: &[u8], payload: Vec<u8>) -> Result<ParsedCommand, GraphicsError> {
+    let mut command = Command::default();
+    if control.is_empty() {
+        return Ok(ParsedCommand { command, payload });
     }
 
+    for property in control.split(|byte| *byte == b',') {
+        let separator =
+            property.iter().position(|byte| *byte == b'=').ok_or(GraphicsError::InvalidControl)?;
+        let (key, value) = property.split_at(separator);
+        let value = &value[1..];
+        if key.len() != 1
+            || !key[0].is_ascii_alphabetic()
+            || value.is_empty()
+            || value.contains(&b'=')
+        {
+            return Err(GraphicsError::InvalidControl);
+        }
+
+        let unsigned = || parse_u32(value);
+        let signed = || parse_i32(value);
+        match key[0] {
+            b'a' => command.action = Some(parse_action(value)?),
+            b'q' => command.quiet = Some(parse_u32(value)?.min(2) as u8),
+            b'f' => command.format = Some(parse_format(value)?),
+            b't' => command.transmission = Some(parse_transmission(value)?),
+            b'o' if value == b"z" => command.compression = Some(Compression::Zlib),
+            b'o' => return Err(GraphicsError::InvalidControl),
+            b'd' => command.delete = Some(parse_delete(value)?),
+            b's' => command.width = Some(unsigned()?),
+            b'v' => command.height = Some(unsigned()?),
+            b'S' => command.data_size = Some(unsigned()?),
+            b'O' => command.data_offset = Some(unsigned()?),
+            b'i' => command.image_id = Some(unsigned()?),
+            b'I' => command.image_number = Some(unsigned()?),
+            b'p' => command.placement_id = Some(unsigned()?),
+            b'm' => command.more = Some(parse_range(value, 0..=1)? != 0),
+            b'N' => command.usage = Some(unsigned()?),
+            b'x' => command.x = Some(unsigned()?),
+            b'y' => command.y = Some(unsigned()?),
+            b'w' => command.crop_width = Some(unsigned()?),
+            b'h' => command.crop_height = Some(unsigned()?),
+            b'X' => command.x_offset = Some(unsigned()?),
+            b'Y' => command.y_offset = Some(unsigned()?),
+            b'c' => command.columns = Some(unsigned()?),
+            b'r' => command.rows = Some(unsigned()?),
+            b'C' => command.cursor_policy = Some(unsigned()?),
+            b'U' => command.unicode_placeholder = Some(unsigned()?),
+            b'z' => command.z_index = Some(signed()?),
+            b'P' => command.parent_image_id = Some(unsigned()?),
+            b'Q' => command.parent_placement_id = Some(unsigned()?),
+            b'H' => command.horizontal_offset = Some(signed()?),
+            b'V' => command.vertical_offset = Some(signed()?),
+            _ => (),
+        }
+    }
+
+    Ok(ParsedCommand { command, payload })
+}
+
+impl GraphicsApcParser {
     pub fn abort(&mut self) {
         self.start();
     }
@@ -314,7 +319,7 @@ fn parse_delete(value: &[u8]) -> Result<DeleteTarget, GraphicsError> {
 mod tests {
     use super::*;
 
-    fn parse(input: &[u8]) -> Option<Result<Command, GraphicsError>> {
+    fn parse(input: &[u8]) -> Option<Result<ParsedCommand, GraphicsError>> {
         let mut parser = GraphicsApcParser::default();
         parser.start();
         input.iter().for_each(|byte| parser.put(*byte));
@@ -323,9 +328,10 @@ mod tests {
 
     #[test]
     fn parses_all_control_types_and_payload() {
-        let command = parse(b"Ga=T,q=2,f=100,t=s,o=z,d=Z,s=10,v=20,S=30,O=40,i=50,I=60,p=70,m=1,N=1,x=2,y=3,w=4,h=5,X=6,Y=7,c=8,r=9,C=1,U=1,z=-10,P=11,Q=12,H=-13,V=14;AAAA")
+        let parsed = parse(b"Ga=T,q=2,f=100,t=s,o=z,d=Z,s=10,v=20,S=30,O=40,i=50,I=60,p=70,m=1,N=1,x=2,y=3,w=4,h=5,X=6,Y=7,c=8,r=9,C=1,U=1,z=-10,P=11,Q=12,H=-13,V=14;AAAA")
             .unwrap()
             .unwrap();
+        let command = parsed.command;
 
         assert_eq!(command.action, Some(Action::TransmitAndPlace));
         assert_eq!(command.quiet, Some(2));
@@ -357,13 +363,13 @@ mod tests {
         assert_eq!(command.parent_placement_id, Some(12));
         assert_eq!(command.horizontal_offset, Some(-13));
         assert_eq!(command.vertical_offset, Some(14));
-        assert_eq!(command.payload, b"AAAA");
+        assert_eq!(parsed.payload, b"AAAA");
     }
 
     #[test]
     fn final_duplicate_key_wins_and_unknown_keys_are_ignored() {
-        let command = parse(b"Gi=1,k=future,i=2;").unwrap().unwrap();
-        assert_eq!(command.image_id, Some(2));
+        let parsed = parse(b"Gi=1,k=future,i=2;").unwrap().unwrap();
+        assert_eq!(parsed.command.image_id, Some(2));
     }
 
     #[test]
@@ -389,13 +395,14 @@ mod tests {
 
     #[test]
     fn preserves_permissive_values_for_action_specific_semantics() {
-        let command = parse(b"Gf=0,q=3,C=2,U=2").unwrap().unwrap();
+        let parsed = parse(b"Gf=0,q=3,C=2,U=2").unwrap().unwrap();
+        let command = parsed.command;
         assert_eq!(command.format, Some(Format::Rgba));
         assert_eq!(command.quiet, Some(2));
         assert_eq!(command.cursor_policy, Some(2));
         assert_eq!(command.unicode_placeholder, Some(2));
 
-        let unknown = parse(b"Gi=31,f=42").unwrap().unwrap();
+        let unknown = parse(b"Gi=31,f=42").unwrap().unwrap().command;
         assert_eq!(unknown.image_id, Some(31));
         assert_eq!(unknown.format, Some(Format::Unknown(42)));
     }
@@ -423,6 +430,6 @@ mod tests {
 
         parser.start();
         b"Gi=2;".iter().for_each(|byte| parser.put(*byte));
-        assert_eq!(parser.end().unwrap().unwrap().image_id, Some(2));
+        assert_eq!(parser.end().unwrap().unwrap().command.image_id, Some(2));
     }
 }

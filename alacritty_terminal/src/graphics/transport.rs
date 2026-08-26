@@ -7,12 +7,13 @@ use base64::engine::general_purpose::STANDARD as Base64;
 
 use super::{Command, GraphicsError, Transmission};
 
-pub fn load_transport(
+pub(crate) fn load_transport(
     transmission: Transmission,
+    payload: Vec<u8>,
     command: &Command,
     limit: usize,
 ) -> Result<Vec<u8>, GraphicsError> {
-    let name = Base64.decode(&command.payload).map_err(|_| GraphicsError::Invalid)?;
+    let name = Base64.decode(payload).map_err(|_| GraphicsError::Invalid)?;
     match transmission {
         Transmission::Direct => Err(GraphicsError::Invalid),
         Transmission::File => read_file(native_path(name), command, limit),
@@ -206,7 +207,26 @@ mod tests {
 
     use super::*;
 
-    fn command(path: &Path) -> Command {
+    struct EncodedCommand {
+        command: Command,
+        payload: Vec<u8>,
+    }
+
+    impl std::ops::Deref for EncodedCommand {
+        type Target = Command;
+
+        fn deref(&self) -> &Self::Target {
+            &self.command
+        }
+    }
+
+    impl std::ops::DerefMut for EncodedCommand {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            &mut self.command
+        }
+    }
+
+    fn command(path: &Path) -> EncodedCommand {
         #[cfg(unix)]
         let bytes = {
             use std::os::unix::ffi::OsStrExt;
@@ -214,7 +234,15 @@ mod tests {
         };
         #[cfg(not(unix))]
         let bytes = path.to_string_lossy().as_bytes();
-        Command { payload: Base64.encode(bytes).into_bytes(), ..Default::default() }
+        EncodedCommand { command: Command::default(), payload: Base64.encode(bytes).into_bytes() }
+    }
+
+    fn load(
+        transmission: Transmission,
+        command: &EncodedCommand,
+        limit: usize,
+    ) -> Result<Vec<u8>, GraphicsError> {
+        load_transport(transmission, command.payload.clone(), &command.command, limit)
     }
 
     #[test]
@@ -225,8 +253,8 @@ mod tests {
         command.data_offset = Some(1);
         command.data_size = Some(2);
 
-        assert_eq!(load_transport(Transmission::File, &command, 2).unwrap(), [2, 3]);
-        assert_eq!(load_transport(Transmission::File, &command, 1), Err(GraphicsError::NoSpace));
+        assert_eq!(load(Transmission::File, &command, 2).unwrap(), [2, 3]);
+        assert_eq!(load(Transmission::File, &command, 1), Err(GraphicsError::NoSpace));
     }
 
     #[test]
@@ -234,12 +262,12 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let safe = directory.path().join("tty-graphics-protocol-image");
         fs::write(&safe, [1, 2, 3, 4]).unwrap();
-        load_transport(Transmission::TemporaryFile, &command(&safe), 4).unwrap();
+        load(Transmission::TemporaryFile, &command(&safe), 4).unwrap();
         assert!(!safe.exists());
 
         let unsafe_path = directory.path().join("image");
         fs::write(&unsafe_path, [1, 2, 3, 4]).unwrap();
-        load_transport(Transmission::TemporaryFile, &command(&unsafe_path), 4).unwrap();
+        load(Transmission::TemporaryFile, &command(&unsafe_path), 4).unwrap();
         assert!(unsafe_path.exists());
     }
 
@@ -258,10 +286,12 @@ mod tests {
         let mut file = unsafe { File::from_raw_fd(descriptor) };
         file.write_all(&[1, 2, 3, 4]).unwrap();
         drop(file);
-        let command =
-            Command { payload: Base64.encode(name.as_bytes()).into_bytes(), ..Default::default() };
+        let command = EncodedCommand {
+            command: Command::default(),
+            payload: Base64.encode(name.as_bytes()).into_bytes(),
+        };
 
-        assert_eq!(load_transport(Transmission::SharedMemory, &command, 4).unwrap(), [1, 2, 3, 4]);
+        assert_eq!(load(Transmission::SharedMemory, &command, 4).unwrap(), [1, 2, 3, 4]);
         assert_eq!(unsafe { libc::shm_open(c_name.as_ptr(), libc::O_RDONLY, 0) }, -1);
     }
 
@@ -280,15 +310,11 @@ mod tests {
         let mut file = unsafe { File::from_raw_fd(descriptor) };
         file.write_all(&[1, 2]).unwrap();
         drop(file);
-        let command = Command {
+        let command = EncodedCommand {
+            command: Command { data_size: Some(4), ..Default::default() },
             payload: Base64.encode(name.as_bytes()).into_bytes(),
-            data_size: Some(4),
-            ..Default::default()
         };
-        assert_eq!(
-            load_transport(Transmission::SharedMemory, &command, 4),
-            Err(GraphicsError::NoData)
-        );
+        assert_eq!(load(Transmission::SharedMemory, &command, 4), Err(GraphicsError::NoData));
     }
 
     #[cfg(unix)]
@@ -301,7 +327,7 @@ mod tests {
         let link = directory.path().join("link");
         fs::write(&target, [1, 2, 3, 4]).unwrap();
         symlink(&target, &link).unwrap();
-        assert_eq!(load_transport(Transmission::File, &command(&link), 4).unwrap(), [1, 2, 3, 4]);
+        assert_eq!(load(Transmission::File, &command(&link), 4).unwrap(), [1, 2, 3, 4]);
     }
 
     #[cfg(unix)]
@@ -314,7 +340,7 @@ mod tests {
         let second = directory.path().join("second");
         symlink(&second, &first).unwrap();
         symlink(&first, &second).unwrap();
-        assert_eq!(load_transport(Transmission::File, &command(&first), 4), Err(GraphicsError::Io));
+        assert_eq!(load(Transmission::File, &command(&first), 4), Err(GraphicsError::Io));
     }
 
     #[cfg(target_os = "linux")]
@@ -325,10 +351,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let link = directory.path().join("regular-looking-file");
         symlink("/proc/self/environ", &link).unwrap();
-        assert_eq!(
-            load_transport(Transmission::File, &command(&link), 4096),
-            Err(GraphicsError::Io)
-        );
+        assert_eq!(load(Transmission::File, &command(&link), 4096), Err(GraphicsError::Io));
     }
 
     #[cfg(unix)]
@@ -341,9 +364,6 @@ mod tests {
         let fifo = directory.path().join("fifo");
         let name = CString::new(fifo.as_os_str().as_bytes()).unwrap();
         assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
-        assert_eq!(
-            load_transport(Transmission::File, &command(&fifo), 4),
-            Err(GraphicsError::BadFile)
-        );
+        assert_eq!(load(Transmission::File, &command(&fifo), 4), Err(GraphicsError::BadFile));
     }
 }

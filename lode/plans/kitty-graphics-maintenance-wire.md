@@ -58,7 +58,7 @@ pub(crate) struct PendingTransmission {
 }
 
 pub(crate) struct RequestError {
-    command: Option<Command>,
+    command: Option<Box<Command>>,
     error: GraphicsError,
 }
 

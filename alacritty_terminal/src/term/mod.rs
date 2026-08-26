@@ -16,9 +16,9 @@ use unicode_width::UnicodeWidthChar;
 
 use crate::event::{Event, EventListener};
 use crate::graphics::{
-    Action as GraphicsAction, Command as GraphicsCommand, GraphicsApcParser, GraphicsError,
-    GraphicsRequest, GraphicsState, PendingResult, PendingTransmission, PlacementHandle,
-    ProcessedCommand,
+    Action as GraphicsAction, Command as GraphicsCommand, EncodedPayload, GraphicsApcParser,
+    GraphicsError, GraphicsRequest, GraphicsState, ParsedCommand, PendingResult,
+    PendingTransmission, PlacementHandle, ProcessedCommand,
 };
 use crate::grid::{Dimensions, Grid, GridIterator, Scroll};
 use crate::index::{self, Boundary, Column, Direction, Line, Point, Side};
@@ -341,7 +341,7 @@ pub struct Term<T> {
     graphics_parser: GraphicsApcParser,
 
     /// Completed command waiting at the ordered PTY parser barrier.
-    graphics_command: Option<Result<GraphicsCommand, GraphicsError>>,
+    graphics_command: Option<Result<ParsedCommand, GraphicsError>>,
 
     /// Incomplete direct chunk transmission.
     pending_graphics_transmission: Option<PendingTransmission>,
@@ -762,53 +762,77 @@ impl<T> Term<T> {
     }
 
     /// Take the graphics command at the current ordered parser barrier.
-    pub fn take_graphics_command(&mut self) -> Option<Result<GraphicsCommand, GraphicsError>> {
+    #[cfg(test)]
+    pub(crate) fn take_graphics_command(&mut self) -> Option<Result<ParsedCommand, GraphicsError>> {
         self.graphics_command.take()
     }
 
     /// Take or assemble the graphics request at the current ordered parser barrier.
     pub fn take_graphics_request(&mut self) -> Option<GraphicsRequest> {
-        let command = match self.graphics_command.take()? {
-            Ok(command) => command,
-            Err(error) => return Some(GraphicsRequest::Command(Err(error))),
+        let parsed = match self.graphics_command.take()? {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                self.deferred_graphics_anchor = None;
+                return Some(GraphicsRequest::Invalid { command: None, error });
+            },
         };
-        let encoded_limit = self
+        let encoded_limit = match self
             .graphics
-            .decode_limit(&command)
+            .decode_limit(&parsed.command)
             .checked_mul(4)
             .and_then(|limit| limit.checked_div(3))
             .and_then(|limit| limit.checked_add(4))
-            .unwrap_or(usize::MAX);
-
-        if let Some(pending) = self.pending_graphics_transmission.take() {
-            if command.action == Some(GraphicsAction::Delete) {
-                return Some(GraphicsRequest::Command(Ok(command)));
-            }
-            return match pending.push(command, encoded_limit) {
-                Ok(PendingResult::Pending(pending)) => {
-                    self.pending_graphics_transmission = Some(pending);
-                    None
-                },
-                Ok(PendingResult::Complete(request)) => Some(request),
-                Err(error) => Some(GraphicsRequest::Command(Err(error))),
-            };
-        }
-
-        if command.more == Some(true)
-            && command.transmission.unwrap_or_default() == crate::graphics::Transmission::Direct
         {
-            match PendingTransmission::start(command, encoded_limit) {
-                Ok(pending) => self.pending_graphics_transmission = Some(pending),
-                Err(error) => return Some(GraphicsRequest::Command(Err(error))),
+            Some(limit) => limit,
+            None => {
+                self.deferred_graphics_anchor = None;
+                return Some(GraphicsRequest::Invalid {
+                    command: Some(parsed.command),
+                    error: GraphicsError::TooLarge,
+                });
+            },
+        };
+
+        let request = if let Some(pending) = self.pending_graphics_transmission.take() {
+            if parsed.command.action == Some(GraphicsAction::Delete) {
+                GraphicsRequest::Command {
+                    command: parsed.command,
+                    payload: EncodedPayload::Single(parsed.payload),
+                }
+            } else {
+                match pending.push(parsed, encoded_limit) {
+                    Ok(PendingResult::Pending(pending)) => {
+                        self.pending_graphics_transmission = Some(pending);
+                        return None;
+                    },
+                    Ok(PendingResult::Complete(request)) => request,
+                    Err(error) => {
+                        self.deferred_graphics_anchor = None;
+                        return Some(error.into_request());
+                    },
+                }
             }
-            None
+        } else if parsed.command.more == Some(true)
+            && parsed.command.transmission.unwrap_or_default()
+                == crate::graphics::Transmission::Direct
+        {
+            match PendingTransmission::start(parsed, encoded_limit) {
+                Ok(pending) => self.pending_graphics_transmission = Some(pending),
+                Err(error) => return Some(error.into_request()),
+            }
+            return None;
         } else {
-            Some(GraphicsRequest::Command(Ok(command)))
-        }
+            GraphicsRequest::Command {
+                command: parsed.command,
+                payload: EncodedPayload::Single(parsed.payload),
+            }
+        };
+
+        self.deferred_graphics_anchor = Some(self.grid.cursor.point);
+        Some(request)
     }
 
-    pub fn begin_graphics_processing(&mut self, request: &GraphicsRequest) {
-        self.deferred_graphics_anchor = request.anchor();
+    pub fn begin_graphics_processing(&mut self, _request: &GraphicsRequest) {
         self.graphics_processing = true;
         self.cancel_graphics_processing = false;
     }
@@ -827,7 +851,7 @@ impl<T> Term<T> {
     }
 
     /// Commit a graphics command processed outside the terminal lock.
-    pub fn commit_graphics_command(&mut self, mut processed: ProcessedCommand)
+    pub fn commit_graphics_command(&mut self, processed: ProcessedCommand)
     where
         T: EventListener,
     {
@@ -837,7 +861,7 @@ impl<T> Term<T> {
             self.deferred_graphics_anchor = None;
             return;
         }
-        processed.set_anchor(self.deferred_graphics_anchor.take());
+        let anchor = self.deferred_graphics_anchor.take();
         match processed {
             ProcessedCommand::Decoded { mut command, image }
                 if command.action == Some(GraphicsAction::TransmitFrame) =>
@@ -850,7 +874,7 @@ impl<T> Term<T> {
             },
             ProcessedCommand::Decoded { command, image } => {
                 let result = if command.action == Some(GraphicsAction::TransmitAndPlace) {
-                    let anchor = command.anchor.unwrap_or(self.grid.cursor.point);
+                    let anchor = anchor.unwrap_or(self.grid.cursor.point);
                     self.graphics
                         .store_and_place(&command, image, anchor, self.cell_width, self.cell_height)
                         .map(|(outcome, span)| (outcome.image_id, Some(span)))
@@ -878,7 +902,7 @@ impl<T> Term<T> {
                             self.graphics
                                 .place_with_span(
                                     &command,
-                                    command.anchor.unwrap_or(self.grid.cursor.point),
+                                    anchor.unwrap_or(self.grid.cursor.point),
                                     span,
                                 )
                                 .map(|_| {
@@ -1449,10 +1473,7 @@ impl<T: EventListener> Handler for Term<T> {
     }
 
     fn apc_end(&mut self) -> bool {
-        if let Some(mut command) = self.graphics_parser.end() {
-            if let Ok(command) = &mut command {
-                command.anchor = Some(self.grid.cursor.point);
-            }
+        if let Some(command) = self.graphics_parser.end() {
             self.graphics_command = Some(command);
             true
         } else {
@@ -2964,6 +2985,24 @@ mod tests {
     #[derive(Clone, Default)]
     struct GeometryListener(Arc<Mutex<Vec<String>>>);
 
+    fn graphics_request(command: GraphicsCommand) -> GraphicsRequest {
+        GraphicsRequest::Command { command, payload: EncodedPayload::Single(Vec::new()) }
+    }
+
+    fn process_parsed(
+        parsed: Result<ParsedCommand, GraphicsError>,
+        storage_limit: usize,
+        local_transmission: bool,
+    ) -> ProcessedCommand {
+        let request = match parsed {
+            Ok(ParsedCommand { command, payload }) => {
+                GraphicsRequest::Command { command, payload: EncodedPayload::Single(payload) }
+            },
+            Err(error) => GraphicsRequest::Invalid { command: None, error },
+        };
+        crate::graphics::process_request(request, storage_limit, local_transmission)
+    }
+
     impl EventListener for GeometryListener {
         fn send_event(&self, event: Event) {
             let response = match event {
@@ -3371,7 +3410,7 @@ mod tests {
         let mut parser = ansi::Processor::<ansi::StdSyncHandler>::new();
         let _consumed = parser.advance_until_terminated(&mut term, b"\x1b_Gi=invalid\x1b\\");
         let command = term.take_graphics_command().unwrap();
-        term.commit_graphics_command(crate::graphics::process_command(command, 4, true));
+        term.commit_graphics_command(process_parsed(command, 4, true));
 
         assert!(responses.lock().unwrap().is_empty());
     }
@@ -3407,7 +3446,7 @@ mod tests {
         let _consumed =
             parser.advance_until_terminated(&mut term, b"\x1b_Gi=31,f=24,s=1,v=1;AQI=\x1b\\");
         let command = term.take_graphics_command().unwrap();
-        term.commit_graphics_command(crate::graphics::process_command(command, 4, true));
+        term.commit_graphics_command(process_parsed(command, 4, true));
 
         assert_eq!(responses.lock().unwrap().as_slice(), ["\x1b_Gi=31;ENODATA\x1b\\"]);
     }
@@ -3423,7 +3462,7 @@ mod tests {
         let _consumed =
             parser.advance_until_terminated(&mut term, b"\x1b_Gi=31,f=42,s=1,v=1;AAAA\x1b\\");
         let command = term.take_graphics_command().unwrap();
-        term.commit_graphics_command(crate::graphics::process_command(command, 4, true));
+        term.commit_graphics_command(process_parsed(command, 4, true));
 
         assert_eq!(responses.lock().unwrap().as_slice(), ["\x1b_Gi=31;EINVAL\x1b\\"]);
     }
@@ -3513,9 +3552,7 @@ mod tests {
         let consumed = parser.advance_until_terminated(&mut term, input);
         let command = term.take_graphics_command().unwrap();
         let options = term.graphics_processing_options();
-        term.commit_graphics_command(crate::graphics::process_command(
-            command, options.0, options.1,
-        ));
+        term.commit_graphics_command(process_parsed(command, options.0, options.1));
         parser.advance(&mut term, &input[consumed..]);
 
         let responses = responses.lock().unwrap();
@@ -3655,7 +3692,8 @@ mod tests {
         assert_eq!(responses.lock().unwrap().len(), response_count);
 
         term.commit_graphics_command(crate::graphics::process_command(
-            Ok(GraphicsCommand { image_id: Some(1), image_number: Some(2), ..Default::default() }),
+            GraphicsCommand { image_id: Some(1), image_number: Some(2), ..Default::default() },
+            Vec::new(),
             4,
             true,
         ));
@@ -3782,7 +3820,7 @@ mod tests {
         let size = TermSize::new(5, 3);
         let mut term = Term::new(Config::default(), &size, VoidListener);
         let command = GraphicsCommand { image_id: Some(1), ..Default::default() };
-        term.begin_graphics_processing(&GraphicsRequest::Command(Ok(command.clone())));
+        term.begin_graphics_processing(&graphics_request(command.clone()));
         term.set_options(Config {
             graphics: GraphicsConfig { local_transmission: false, ..Default::default() },
             ..Default::default()
@@ -3803,10 +3841,8 @@ mod tests {
             term.grid[Line(0)][Column(column)].c = if column == 6 { 'X' } else { 'a' };
         }
         term.grid[Line(0)][Column(9)].flags.insert(Flags::WRAPLINE);
-        term.begin_graphics_processing(&GraphicsRequest::Command(Ok(GraphicsCommand {
-            anchor: Some(Point::new(Line(0), Column(6))),
-            ..Default::default()
-        })));
+        term.deferred_graphics_anchor = Some(Point::new(Line(0), Column(6)));
+        term.begin_graphics_processing(&graphics_request(GraphicsCommand::default()));
 
         term.resize(TermSize::new(5, 3));
 
@@ -3965,7 +4001,7 @@ mod tests {
         term.goto(4, 5);
         parser.advance(&mut term, b"\x1b_Gm=0;BA==\x1b\\");
         let request = term.take_graphics_request().unwrap();
-        assert_eq!(request.anchor(), Some(Point::new(Line(4), Column(5))));
+        assert_eq!(term.deferred_graphics_anchor, Some(Point::new(Line(4), Column(5))));
         let options = term.graphics_processing_options_for(&request);
         term.commit_graphics_command(crate::graphics::process_request(
             request, options.0, options.1,
@@ -3978,7 +4014,7 @@ mod tests {
         parser.advance(&mut term, b"\x1b_Gi=2,f=32,s=1,v=1,m=1,q=2;AQID\x1b\\");
         assert!(term.take_graphics_request().is_none());
         parser.advance(&mut term, b"\x1b_Ga=d\x1b\\");
-        assert!(matches!(term.take_graphics_request(), Some(GraphicsRequest::Command(Ok(_)))));
+        assert!(matches!(term.take_graphics_request(), Some(GraphicsRequest::Command { .. })));
         parser.advance(&mut term, b"\x1b_Gi=2,f=32,s=1,v=1,q=2;AQIDBA==\x1b\\");
         let request = term.take_graphics_request().unwrap();
         let options = term.graphics_processing_options_for(&request);
@@ -4009,7 +4045,7 @@ mod tests {
         let consumed = parser.advance_until_terminated(&mut term, input);
         let command = term.take_graphics_command().unwrap().unwrap();
 
-        assert_eq!(command.image_id, Some(42));
+        assert_eq!(command.command.image_id, Some(42));
         assert_eq!(command.payload, b"AAAA");
         assert_eq!(&input[consumed..], b"\\after");
     }
