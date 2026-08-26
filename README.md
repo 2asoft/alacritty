@@ -2,12 +2,9 @@
     <img width="200" alt="Alacritty Logo" src="https://raw.githubusercontent.com/alacritty/alacritty/master/extra/logo/compat/alacritty-term%2Bscanlines.png">
 </p>
 
-<h1 align="center">Alacritty - A fast, cross-platform, OpenGL terminal emulator</h1>
+<h1 align="center">Alacritty - A fast, cross-platform, OpenGL terminal emulator.  Now with Kitty graphics.</h1>
 
-<p align="center">
-  <img alt="Alacritty - A fast, cross-platform, OpenGL terminal emulator"
-       src="https://raw.githubusercontent.com/alacritty/alacritty/master/extra/promo/alacritty-readme.png">
-</p>
+![Alacritty - A fast, cross-platform, OpenGL terminal emulator.  Now with Kitty graphics.](./extra/promo/alacritty-readme.avif)
 
 ## About
 
