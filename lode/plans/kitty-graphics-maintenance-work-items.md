@@ -183,7 +183,11 @@ Suggested commits:
 
 ### Work item 9: Recheck dependencies and VTE exit criteria
 
+Status: Complete.
+
 Depends on final code shape.
+
+The 2026-08-26 recheck found released `vte` 0.15.0 still current. Upstream HEAD provides generic parser termination but not streaming APC start, put, end, and abort callbacks, so the local fork remains required. `base64`, `png`, `miniz_oxide`, `libc`, and test-only `tempfile` still own distinct required boundaries; replacing them would add integration code without removing terminal-side protocol state.
 
 Keep `base64`, `png`, `miniz_oxide`, `libc`, and test-only `tempfile` unless measurements identify a concrete replacement benefit. Do not adopt KGP client emitter crates.
 

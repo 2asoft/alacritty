@@ -7,7 +7,7 @@ This repository contains Alacritty, its reusable terminal core, configuration cr
 - `alacritty_terminal` owns terminal semantics, grids, screen state, and protocol state.
 - `alacritty` owns windows, configuration reload, scheduling, display snapshots, and GPU resources.
 - `alacritty_config` and `alacritty_config_derive` own configuration loading support.
-- The external `vte` dependency owns generic VT byte-stream recognition. This fork may need a pinned fork to expose streaming APC events.
+- The vendored `vte` fork owns generic VT byte-stream recognition plus streaming APC events. Keep it pinned until a released upstream version provides equivalent APC lifecycle callbacks and ordered termination.
 
 ## Governing constraints
 
