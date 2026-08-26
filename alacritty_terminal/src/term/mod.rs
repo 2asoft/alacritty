@@ -2933,9 +2933,14 @@ pub mod test {
 mod tests {
     use super::*;
 
+    use std::hint::black_box;
     use std::mem;
     use std::num::NonZeroU32;
     use std::sync::{Arc, Mutex};
+    use std::time::Instant;
+
+    use base64::Engine;
+    use base64::engine::general_purpose::STANDARD as Base64;
 
     use crate::event::VoidListener;
     use crate::grid::{Grid, Scroll};
@@ -2975,6 +2980,334 @@ mod tests {
                 self.0.lock().unwrap().push(response);
             }
         }
+    }
+
+    fn measurement_direct_chunks(format: crate::graphics::Format, width: u32, height: u32) {
+        const RAW_CHUNK_BYTES: usize = 96 * 1024;
+
+        let channels = if format == crate::graphics::Format::Rgb { 3 } else { 4 };
+        let raw_bytes =
+            usize::try_from(width).unwrap() * usize::try_from(height).unwrap() * channels;
+        let storage_bytes = raw_bytes / channels * 4;
+        let size = TermSize::new(80, 24);
+        let config = Config {
+            graphics: GraphicsConfig { storage_limit: storage_bytes, local_transmission: true },
+            ..Default::default()
+        };
+        let mut term = Term::new(config, &size, VoidListener);
+        let mut parser = ansi::Processor::<ansi::StdSyncHandler>::new();
+        let mut remaining = raw_bytes;
+        let mut first = true;
+        let start = Instant::now();
+
+        while remaining != 0 {
+            let chunk_bytes = remaining.min(RAW_CHUNK_BYTES);
+            remaining -= chunk_bytes;
+            let payload = Base64.encode(vec![0x7f; chunk_bytes]);
+            let control = if first {
+                first = false;
+                format!(
+                    "\u{1b}_Ga=t,f={},s={width},v={height},m={};",
+                    if format == crate::graphics::Format::Rgb { 24 } else { 32 },
+                    u8::from(remaining != 0),
+                )
+            } else {
+                format!("\u{1b}_Gm={};", u8::from(remaining != 0))
+            };
+            let input = format!("{control}{payload}\u{1b}\\");
+            let consumed = parser.advance_until_terminated(&mut term, input.as_bytes());
+            assert!(consumed > 0 && consumed <= input.len());
+            let request = term.take_graphics_request();
+            if remaining == 0 {
+                let request = request.expect("final chunk must complete the request");
+                term.begin_graphics_processing(&request);
+                let options = term.graphics_processing_options_for(&request);
+                let processed = crate::graphics::process_request(request, options.0, options.1);
+                term.commit_graphics_command(processed);
+            } else {
+                assert!(request.is_none());
+            }
+            parser.advance(&mut term, &input.as_bytes()[consumed..]);
+        }
+
+        let elapsed = start.elapsed().as_nanos();
+        assert_eq!(black_box(term.graphics.used_bytes()), storage_bytes);
+        println!("KGP_MEASUREMENT elapsed_ns={elapsed}");
+    }
+
+    #[test]
+    #[ignore = "working-set measurement"]
+    fn measurement_direct_rgba_64_mib() {
+        measurement_direct_chunks(crate::graphics::Format::Rgba, 4096, 4096);
+    }
+
+    #[test]
+    #[ignore = "working-set measurement"]
+    fn measurement_direct_rgb_64_mib() {
+        measurement_direct_chunks(crate::graphics::Format::Rgb, 4096, 5461);
+    }
+
+    fn measurement_animation_term() -> Term<VoidListener> {
+        let side = 4096;
+        let bytes = usize::try_from(side * side * 4).unwrap();
+        let size = TermSize::new(80, 24);
+        let config = Config {
+            graphics: GraphicsConfig { storage_limit: bytes * 4, local_transmission: true },
+            ..Default::default()
+        };
+        let mut term = Term::new(config, &size, VoidListener);
+        term.graphics
+            .store(
+                &GraphicsCommand { image_id: Some(1), ..Default::default() },
+                crate::graphics::PixelBuffer::from_rgba(side, side, Arc::from(vec![0x11; bytes])),
+            )
+            .unwrap();
+        term
+    }
+
+    #[test]
+    #[ignore = "terminal lock-duration measurement"]
+    fn measurement_animation_insert_4096_square() {
+        let side = 4096;
+        let bytes = usize::try_from(side * side * 4).unwrap();
+        let terminal = crate::sync::FairMutex::new(measurement_animation_term());
+        let processed = ProcessedCommand::Decoded {
+            command: GraphicsCommand {
+                action: Some(GraphicsAction::TransmitFrame),
+                image_id: Some(1),
+                ..Default::default()
+            },
+            image: crate::graphics::PixelBuffer::from_rgba(
+                side,
+                side,
+                Arc::from(vec![0x22; bytes]),
+            ),
+        };
+
+        let start = Instant::now();
+        terminal.lock_unfair().commit_graphics_command(processed);
+        let elapsed = start.elapsed().as_nanos();
+        assert_eq!(black_box(terminal.lock_unfair().graphics.used_bytes()), bytes * 2);
+        println!("KGP_MEASUREMENT elapsed_ns={elapsed}");
+    }
+
+    #[test]
+    #[ignore = "terminal lock-duration measurement"]
+    fn measurement_animation_compose_4096_square() {
+        let side = 4096;
+        let bytes = usize::try_from(side * side * 4).unwrap();
+        let mut term = measurement_animation_term();
+        term.graphics
+            .store_frame(
+                &GraphicsCommand { image_id: Some(1), ..Default::default() },
+                crate::graphics::PixelBuffer::from_rgba(side, side, Arc::from(vec![0x22; bytes])),
+            )
+            .unwrap();
+        let terminal = crate::sync::FairMutex::new(term);
+        let processed = ProcessedCommand::Metadata(GraphicsCommand {
+            action: Some(GraphicsAction::ComposeFrame),
+            image_id: Some(1),
+            rows: Some(2),
+            columns: Some(1),
+            cursor_policy: Some(1),
+            ..Default::default()
+        });
+
+        let start = Instant::now();
+        terminal.lock_unfair().commit_graphics_command(processed);
+        let elapsed = start.elapsed().as_nanos();
+        assert_eq!(black_box(terminal.lock_unfair().graphics.used_bytes()), bytes * 2);
+        println!("KGP_MEASUREMENT elapsed_ns={elapsed}");
+    }
+
+    fn measurement_placeholder_cell(placement_id: Option<u8>) -> Cell {
+        let mut cell = Cell {
+            c: crate::graphics::PLACEHOLDER,
+            fg: ansi::Color::Indexed(1),
+            ..Default::default()
+        };
+        cell.set_underline_color(placement_id.map(ansi::Color::Indexed));
+        cell.push_zerowidth('\u{0305}');
+        cell
+    }
+
+    fn measurement_snapshot(term: &Term<VoidListener>) -> usize {
+        let has_virtual = term.graphics.has_virtual_placements();
+        let mut origins = std::collections::HashMap::new();
+        if has_virtual {
+            for line in term.grid.topmost_line().0..term.screen_lines() as i32 {
+                let mut previous = None;
+                for column in 0..term.columns() {
+                    let point = Point::new(Line(line), Column(column));
+                    let Some(placeholder) =
+                        crate::graphics::decode_placeholder(&term.grid[point], previous)
+                    else {
+                        previous = None;
+                        continue;
+                    };
+                    previous = Some(placeholder);
+                    origins
+                        .entry((placeholder.image_id, placeholder.placement_id))
+                        .and_modify(|origin: &mut Point| {
+                            origin.line = origin.line.min(point.line);
+                            origin.column = origin.column.min(point.column);
+                        })
+                        .or_insert(point);
+                }
+            }
+        }
+
+        let mut count = if term.graphics.has_classic_placements() {
+            term.graphics
+                .renderables_with_virtual_origins(|image_id, placement_id| {
+                    origins.get(&(image_id, placement_id)).copied()
+                })
+                .len()
+        } else {
+            0
+        };
+        for viewport_line in 0..term.screen_lines() {
+            let line = Line(viewport_line as i32 - term.grid.display_offset() as i32);
+            let mut previous = None;
+            for column in 0..term.columns() {
+                let point = Point::new(line, Column(column));
+                let Some(placeholder) =
+                    crate::graphics::decode_placeholder(&term.grid[point], previous)
+                else {
+                    previous = None;
+                    continue;
+                };
+                previous = Some(placeholder);
+                count += usize::from(
+                    term.graphics
+                        .placeholder_renderable(placeholder.image_id, placeholder.placement_id)
+                        .is_some(),
+                );
+            }
+        }
+        count
+    }
+
+    fn measurement_history_term(mode: &str) -> Term<VoidListener> {
+        let size = TermSize::new(1, 24);
+        let mut term = Term::new(Config::default(), &size, VoidListener);
+        term.grid = Grid::new(24, 1, 100_000);
+        term.grid.scroll_up(&(Line(0)..Line(24)), 100_000);
+        if mode == "none" {
+            return term;
+        }
+
+        let placement_id = (mode == "relative").then_some(1);
+        let parent = GraphicsCommand {
+            image_id: Some(1),
+            placement_id: placement_id.map(u32::from),
+            unicode_placeholder: Some(1),
+            columns: Some(1),
+            rows: Some(1),
+            ..Default::default()
+        };
+        term.graphics
+            .store(&parent, crate::graphics::PixelBuffer::from_rgba(1, 1, Arc::from([1, 2, 3, 4])))
+            .unwrap();
+        term.graphics.place(&parent, Point::default()).unwrap();
+        let placeholder = measurement_placeholder_cell(placement_id);
+        let top = term.grid.topmost_line();
+        term.grid[top][Column(0)] = placeholder.clone();
+        term.grid[Line(0)][Column(0)] = placeholder;
+
+        if mode == "relative" {
+            let child = GraphicsCommand { image_id: Some(2), ..Default::default() };
+            term.graphics
+                .store(
+                    &child,
+                    crate::graphics::PixelBuffer::from_rgba(1, 1, Arc::from([5, 6, 7, 8])),
+                )
+                .unwrap();
+            term.graphics
+                .place(
+                    &GraphicsCommand {
+                        image_id: Some(2),
+                        parent_image_id: Some(1),
+                        parent_placement_id: Some(1),
+                        ..Default::default()
+                    },
+                    Point::default(),
+                )
+                .unwrap();
+        }
+        term
+    }
+
+    fn run_history_measurement(mode: &str) {
+        let term = measurement_history_term(mode);
+        let start = Instant::now();
+        let count = black_box(measurement_snapshot(&term));
+        let elapsed = start.elapsed().as_nanos();
+        assert_eq!(
+            count,
+            if mode == "none" {
+                0
+            } else if mode == "relative" {
+                2
+            } else {
+                1
+            }
+        );
+        println!("KGP_MEASUREMENT elapsed_ns={elapsed}");
+    }
+
+    #[test]
+    #[ignore = "snapshot scaling measurement"]
+    fn measurement_history_none_100000_lines() {
+        run_history_measurement("none");
+    }
+
+    #[test]
+    #[ignore = "snapshot scaling measurement"]
+    fn measurement_history_virtual_100000_lines() {
+        run_history_measurement("virtual");
+    }
+
+    #[test]
+    #[ignore = "snapshot scaling measurement"]
+    fn measurement_history_relative_100000_lines() {
+        run_history_measurement("relative");
+    }
+
+    #[test]
+    #[ignore = "snapshot scaling measurement"]
+    fn measurement_65536_virtual_placements() {
+        let size = TermSize::new(80, 24);
+        let mut term = Term::new(Config::default(), &size, VoidListener);
+        let image = GraphicsCommand { image_id: Some(1), ..Default::default() };
+        term.graphics
+            .store(&image, crate::graphics::PixelBuffer::from_rgba(1, 1, Arc::from([1, 2, 3, 4])))
+            .unwrap();
+        for placement_id in 1..=65_536 {
+            term.graphics
+                .place(
+                    &GraphicsCommand {
+                        image_id: Some(1),
+                        placement_id: Some(placement_id),
+                        unicode_placeholder: Some(1),
+                        columns: Some(80),
+                        rows: Some(24),
+                        ..Default::default()
+                    },
+                    Point::default(),
+                )
+                .unwrap();
+        }
+        for line in 0..24 {
+            for column in 0..80 {
+                term.grid[Line(line)][Column(column)] = measurement_placeholder_cell(None);
+            }
+        }
+
+        let start = Instant::now();
+        assert_eq!(black_box(measurement_snapshot(&term)), 80 * 24);
+        let elapsed = start.elapsed().as_nanos();
+        println!("KGP_MEASUREMENT elapsed_ns={elapsed}");
     }
 
     #[test]

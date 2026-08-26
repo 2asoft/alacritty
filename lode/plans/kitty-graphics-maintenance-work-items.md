@@ -6,6 +6,8 @@ Parent plan: [Kitty graphics maintenance](kitty-graphics-maintenance.md)
 
 ### Work item 0: Safety references and measurements
 
+Status: Complete.
+
 1. Record local and remote tips and create a backup reference.
 2. Confirm a clean tree.
 3. Add repeatable measurements for ordinary text, chunk peak RSS, animation composition, and placeholder snapshot scaling.
