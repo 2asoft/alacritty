@@ -45,4 +45,28 @@ The renderer bounds its accounted texture cache by `Q`. Texture tiling respects 
 
 ## Verification
 
-Unit tests check allocation ownership transfer, capacity normalization, reuse of a unique canvas, preservation of a shared canvas, and encoded block counts under empty and small continuation streams.
+Run:
+
+```sh
+scripts/kitty-graphics-memory.sh
+```
+
+The script builds `kitty_memory_measurement` with the existing `fuzzing` feature and runs each case in a separate process. The example uses the production parser and deferred processing boundary, verifies replies and snapshot pixels, and counts live allocation requests through `System`.
+
+Cases cover direct RGB/RGBA, new animation frames under eviction pressure, full size frame edits, and composition between retained frames. Each fixture has an explicit combined allocation threshold. The output distinguishes visible snapshot pixels from expected retained pixels including hidden frames.
+
+The measurement excludes the caller's preallocated wire input and initial terminal/parser/listener allocations. It measures requested live heap bytes, not RSS or latency. Inspect its raw `key=value` output and use the separate parser/performance harnesses for timing claims.
+
+The following release measurements used Rust 1.98.1 on x86_64 Linux, the same example source for both implementations, and frames containing 16 MiB of RGBA pixels. The previous implementation is commit `9c39f2bcc3df41ce211c135319bc1724788d3036`. Every run verified replies and visible pixels.
+
+| Case | Quota | Previous peak bytes | Corrected peak bytes |
+| --- | --- | ---: | ---: |
+| `animation_frame` | 32 MiB | 100,664,908 | 67,110,556 |
+| `compose_frames` | 32 MiB | 83,887,660 | 50,336,124 |
+| `edit_frame` | 16 MiB | 67,110,428 | 50,333,284 |
+| `direct_rgb` | 16 MiB | 49,807,440 | 29,360,233 |
+| `direct_rgba` | 16 MiB | 49,283,152 | 28,055,616 |
+
+These are additional live allocation requests with the exclusions above. Each threshold in the script applies to its recorded operation and includes an allowance for metadata.
+
+Unit tests also check allocation ownership transfer, capacity normalization, reuse of a unique canvas, preservation of a shared canvas, and encoded block counts under empty and small continuation streams.

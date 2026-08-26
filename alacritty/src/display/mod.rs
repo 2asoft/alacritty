@@ -2,7 +2,7 @@
 //! GPU drawing.
 
 use std::cmp;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fmt::{self, Formatter};
 use std::mem::{self, ManuallyDrop};
 use std::num::NonZeroU32;
@@ -28,7 +28,6 @@ use crossfont::{Rasterize, Rasterizer, Size as FontSize};
 use unicode_width::UnicodeWidthChar;
 
 use alacritty_terminal::event::{EventListener, OnResize, WindowSize};
-use alacritty_terminal::graphics::decode_placeholder;
 use alacritty_terminal::grid::Dimensions as TermDimensions;
 use alacritty_terminal::index::{Column, Direction, Line, Point};
 use alacritty_terminal::selection::Selection;
@@ -115,20 +114,6 @@ fn classic_dimensions(
         },
         (None, None) => (source.0 as f32, source.1 as f32),
     }
-}
-
-fn record_virtual_origin(
-    origins: &mut HashMap<(u32, u32), Point>,
-    identity: (u32, u32),
-    point: Point,
-) {
-    origins
-        .entry(identity)
-        .and_modify(|origin| {
-            origin.line = origin.line.min(point.line);
-            origin.column = origin.column.min(point.column);
-        })
-        .or_insert(point);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -919,35 +904,8 @@ impl Display {
         let cursor = content.cursor();
 
         let size_info = self.size_info;
-        let has_virtual_graphics = terminal.graphics().has_virtual_placements();
-        let mut virtual_origins = HashMap::<(u32, u32), Point>::new();
-        for line in terminal.grid().topmost_line().0..size_info.screen_lines() as i32 {
-            if !has_virtual_graphics {
-                break;
-            }
-            let mut previous = None;
-            for column in 0..size_info.columns() {
-                let point = Point::new(Line(line), Column(column));
-                let cell = &terminal.grid()[point];
-                let Some(placeholder) = decode_placeholder(cell, previous) else {
-                    previous = None;
-                    continue;
-                };
-                previous = Some(placeholder);
-                record_virtual_origin(
-                    &mut virtual_origins,
-                    (placeholder.image_id, placeholder.placement_id),
-                    point,
-                );
-            }
-        }
-        let renderables = if terminal.graphics().has_classic_placements() {
-            terminal.graphics().renderables_with_virtual_origins(|image_id, placement_id| {
-                virtual_origins.get(&(image_id, placement_id)).copied()
-            })
-        } else {
-            Vec::new()
-        };
+        let snapshot = terminal.graphics_render_snapshot();
+        let renderables = snapshot.classic;
         let mut graphics: Vec<_> = renderables
             .into_iter()
             .filter_map(|graphic| {
@@ -1015,81 +973,57 @@ impl Display {
         let cell_width = size_info.cell_width();
         let cell_height = size_info.cell_height();
         let mut rendered_placeholders = HashSet::<(usize, usize)>::new();
-        for viewport_line in 0..size_info.screen_lines() {
-            if !has_virtual_graphics {
-                break;
-            }
-            let grid_line = Line(viewport_line as i32 - display_offset as i32);
-            let mut previous = None;
-            for column in 0..size_info.columns() {
-                let point = Point::new(grid_line, Column(column));
-                let cell = &terminal.grid()[point];
-                let Some(placeholder) = decode_placeholder(cell, previous) else {
-                    previous = None;
-                    continue;
-                };
-                previous = Some(placeholder);
-                let Some(prototype) = terminal
-                    .graphics()
-                    .placeholder_renderable(placeholder.image_id, placeholder.placement_id)
-                else {
-                    continue;
-                };
-                let (Some(columns), Some(rows)) = (prototype.columns, prototype.rows) else {
-                    continue;
-                };
-                if u32::from(placeholder.column) >= columns || u32::from(placeholder.row) >= rows {
-                    continue;
-                }
+        for placeholder in snapshot.placeholders {
+            let viewport_line = placeholder.point.line;
+            let column = placeholder.point.column.0;
+            let prototype = placeholder.prototype;
+            let (Some(columns), Some(rows)) = (prototype.columns, prototype.rows) else {
+                continue;
+            };
 
-                let image_width = prototype.pixels.width();
-                let image_height = prototype.pixels.height();
-                let crop_x = prototype.source_x.min(image_width);
-                let crop_y = prototype.source_y.min(image_height);
-                let crop_width = prototype
-                    .source_width
-                    .unwrap_or(image_width - crop_x)
-                    .min(image_width - crop_x);
-                let crop_height = prototype
-                    .source_height
-                    .unwrap_or(image_height - crop_y)
-                    .min(image_height - crop_y);
-                rendered_placeholders.insert((viewport_line, column));
-                let Some(geometry) = placeholder_geometry(
-                    crop_x,
-                    crop_y,
-                    crop_width,
-                    crop_height,
-                    columns,
-                    rows,
-                    placeholder.column,
-                    placeholder.row,
-                    cell_width,
-                    cell_height,
-                ) else {
-                    continue;
-                };
-                graphics.push(RenderableImage {
-                    image: prototype.image,
-                    content_generation: prototype.content_generation,
-                    pixels: prototype.pixels,
-                    x: size_info.padding_x() + column as f32 * cell_width + geometry.destination_x,
-                    y: size_info.padding_y()
-                        + viewport_line as f32 * cell_height
-                        + geometry.destination_y,
-                    width: geometry.destination_width,
-                    height: geometry.destination_height,
-                    source_x: geometry.source_x,
-                    source_y: geometry.source_y,
-                    source_width: geometry.source_width,
-                    source_height: geometry.source_height,
-                    z_index: prototype.z_index,
-                    image_id: prototype.image_id,
-                    creation_serial: prototype.creation_serial,
-                    clip_top: f32::NEG_INFINITY,
-                    clip_bottom: f32::INFINITY,
-                });
-            }
+            let image_width = prototype.pixels.width();
+            let image_height = prototype.pixels.height();
+            let crop_x = prototype.source_x.min(image_width);
+            let crop_y = prototype.source_y.min(image_height);
+            let crop_width =
+                prototype.source_width.unwrap_or(image_width - crop_x).min(image_width - crop_x);
+            let crop_height =
+                prototype.source_height.unwrap_or(image_height - crop_y).min(image_height - crop_y);
+            rendered_placeholders.insert((viewport_line, column));
+            let Some(geometry) = placeholder_geometry(
+                crop_x,
+                crop_y,
+                crop_width,
+                crop_height,
+                columns,
+                rows,
+                placeholder.column,
+                placeholder.row,
+                cell_width,
+                cell_height,
+            ) else {
+                continue;
+            };
+            graphics.push(RenderableImage {
+                image: prototype.image,
+                content_generation: prototype.content_generation,
+                pixels: prototype.pixels,
+                x: size_info.padding_x() + column as f32 * cell_width + geometry.destination_x,
+                y: size_info.padding_y()
+                    + viewport_line as f32 * cell_height
+                    + geometry.destination_y,
+                width: geometry.destination_width,
+                height: geometry.destination_height,
+                source_x: geometry.source_x,
+                source_y: geometry.source_y,
+                source_width: geometry.source_width,
+                source_height: geometry.source_height,
+                z_index: prototype.z_index,
+                image_id: prototype.image_id,
+                creation_serial: prototype.creation_serial,
+                clip_top: f32::NEG_INFINITY,
+                clip_bottom: f32::INFINITY,
+            });
         }
 
         graphics.sort_by_key(|image| (image.z_index, image.image_id, image.creation_serial));
@@ -1967,14 +1901,6 @@ fn window_size(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn virtual_origin_uses_independent_minimum_row_and_column() {
-        let mut origins = HashMap::new();
-        record_virtual_origin(&mut origins, (1, 2), Point::new(Line(5), Column(1)));
-        record_virtual_origin(&mut origins, (1, 2), Point::new(Line(1), Column(5)));
-        assert_eq!(origins[&(1, 2)], Point::new(Line(1), Column(1)));
-    }
 
     #[test]
     fn placeholder_geometry_fits_and_centers_image_in_virtual_grid() {

@@ -134,6 +134,10 @@ impl Placements {
         self.entries.values_mut()
     }
 
+    pub(crate) fn get(&self, handle: PlacementHandle) -> Option<&Placement> {
+        self.entries.get(&handle)
+    }
+
     pub fn tracked_anchors(&self) -> Vec<(PlacementHandle, Point)> {
         self.entries
             .values()
@@ -173,7 +177,7 @@ impl Placements {
     pub fn resolved_anchor(
         &self,
         placement: &Placement,
-        virtual_origin: &impl Fn(u32, u32) -> Option<Point>,
+        virtual_origin: &impl Fn(PlacementHandle) -> Option<Point>,
     ) -> Option<ResolvedPlacement> {
         let mut root = placement;
         let mut horizontal_cells = 0i32;
@@ -188,11 +192,8 @@ impl Placements {
             vertical_cells = vertical_cells.checked_add(location.vertical_cells)?;
             root = self.entries.get(&location.parent)?;
         }
-        let root_anchor = if root.virtual_placement {
-            virtual_origin(root.image_id?.get(), root.placement_id.map_or(0, NonZeroU32::get))?
-        } else {
-            root.anchor
-        };
+        let root_anchor =
+            if root.virtual_placement { virtual_origin(root.handle)? } else { root.anchor };
         Some(ResolvedPlacement {
             line: Line(root_anchor.line.0.checked_add(vertical_cells)?),
             column: i32::try_from(root_anchor.column.0).ok()?.checked_add(horizontal_cells)?,
@@ -297,7 +298,7 @@ impl Placements {
             if placement.virtual_placement {
                 return true;
             }
-            let Some(location) = self.resolved_anchor(placement, &|_, _| None) else {
+            let Some(location) = self.resolved_anchor(placement, &|_| None) else {
                 return true;
             };
             location.line < visible_lines.end

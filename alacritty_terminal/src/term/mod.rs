@@ -17,8 +17,9 @@ use unicode_width::UnicodeWidthChar;
 use crate::event::{Event, EventListener};
 use crate::graphics::{
     Action as GraphicsAction, Command as GraphicsCommand, DeferredGraphics, EncodedPayload,
-    GraphicsApcParser, GraphicsError, GraphicsRequest, GraphicsState, ParsedCommand, PendingResult,
-    PendingTransmission, PlacementHandle, PreparedGraphics, ProcessedCommand, ProcessingOptions,
+    GraphicsApcParser, GraphicsError, GraphicsRenderSnapshot, GraphicsRequest, GraphicsState,
+    ParsedCommand, PendingResult, PendingTransmission, PlacementHandle, PreparedGraphics,
+    ProcessedCommand, ProcessingOptions, RenderablePlaceholder, decode_placeholder,
 };
 use crate::grid::{Dimensions, Grid, GridIterator, Scroll};
 use crate::index::{self, Boundary, Column, Direction, Line, Point, Side};
@@ -985,9 +986,15 @@ impl<T> Term<T> {
             ProcessedCommand::Metadata(command) => {
                 if command.action == Some(GraphicsAction::Delete) {
                     let visible_lines = Line(0)..Line(self.screen_lines() as i32);
+                    let (_, origins) = self.graphics_placeholder_state(false);
                     let result = self
                         .graphics
-                        .delete(&command, self.grid.cursor.point, visible_lines)
+                        .delete_with_virtual_origins(
+                            &command,
+                            self.grid.cursor.point,
+                            visible_lines,
+                            &origins,
+                        )
                         .map(|_| std::num::NonZeroU32::new(command.image_id.unwrap_or(0)));
                     self.graphics_response(&command, result);
                 } else if command.action == Some(GraphicsAction::Place) {
@@ -1051,6 +1058,96 @@ impl<T> Term<T> {
             self.mark_fully_damaged();
         }
         deadline
+    }
+
+    pub fn graphics_render_snapshot(&self) -> GraphicsRenderSnapshot {
+        let has_virtual = self.graphics.has_virtual_placements();
+        let has_classic = self.graphics.has_classic_placements();
+        if !has_virtual && !has_classic {
+            return GraphicsRenderSnapshot::default();
+        }
+        if !has_virtual {
+            return GraphicsRenderSnapshot {
+                classic: self.graphics.renderables(),
+                placeholders: Vec::new(),
+            };
+        }
+
+        let (placeholders, origins) = self.graphics_placeholder_state(true);
+        let classic = if has_classic {
+            self.graphics.renderables_with_virtual_origins(|handle| origins.get(&handle).copied())
+        } else {
+            Vec::new()
+        };
+        GraphicsRenderSnapshot { classic, placeholders }
+    }
+
+    fn graphics_placeholder_state(
+        &self,
+        collect_visible: bool,
+    ) -> (Vec<RenderablePlaceholder>, HashMap<PlacementHandle, Point>) {
+        let required = self.graphics.required_virtual_origins();
+        if !self.graphics.has_virtual_placements() || (!collect_visible && required.is_empty()) {
+            return (Vec::new(), HashMap::new());
+        }
+        let prototypes = self.graphics.virtual_prototypes();
+        let display_offset = self.grid.display_offset();
+        let mut origins = HashMap::<PlacementHandle, Point>::new();
+        let mut placeholders = Vec::new();
+        let lines = if required.is_empty() {
+            -(display_offset as i32)..self.screen_lines() as i32 - display_offset as i32
+        } else {
+            self.grid.topmost_line().0..self.screen_lines() as i32
+        };
+        for line in lines {
+            let mut previous = None;
+            for column in 0..self.columns() {
+                let point = Point::new(Line(line), Column(column));
+                let Some(placeholder) = decode_placeholder(&self.grid[point], previous) else {
+                    previous = None;
+                    continue;
+                };
+                previous = Some(placeholder);
+                let key = (placeholder.image_id, placeholder.placement_id);
+                let Some(handle) = prototypes.get(&key).copied() else {
+                    continue;
+                };
+                let Some((columns, rows)) = self.graphics.virtual_placement_span(handle) else {
+                    continue;
+                };
+                if u32::from(placeholder.column) >= columns || u32::from(placeholder.row) >= rows {
+                    continue;
+                }
+                if required.contains(&handle) {
+                    origins
+                        .entry(handle)
+                        .and_modify(|origin| {
+                            origin.line = origin.line.min(point.line);
+                            origin.column = origin.column.min(point.column);
+                        })
+                        .or_insert(point);
+                }
+                if !collect_visible {
+                    continue;
+                }
+                let Some(viewport_point) = point_to_viewport(display_offset, point) else {
+                    continue;
+                };
+                if viewport_point.line >= self.screen_lines() {
+                    continue;
+                }
+                let Some(prototype) = self.graphics.renderable_for_virtual(handle) else {
+                    continue;
+                };
+                placeholders.push(RenderablePlaceholder {
+                    point: viewport_point,
+                    row: placeholder.row,
+                    column: placeholder.column,
+                    prototype,
+                });
+            }
+        }
+        (placeholders, origins)
     }
 
     /// Graphics state paired with the active grid.
@@ -2305,10 +2402,12 @@ impl<T: EventListener> Handler for Term<T> {
             },
             ansi::ClearMode::All => {
                 let visible_lines = Line(0)..Line(screen_lines as i32);
-                let _ = self.graphics.delete(
+                let (_, origins) = self.graphics_placeholder_state(false);
+                let _ = self.graphics.delete_with_virtual_origins(
                     &GraphicsCommand { action: Some(GraphicsAction::Delete), ..Default::default() },
                     self.grid.cursor.point,
                     visible_lines,
+                    &origins,
                 );
                 if self.mode.contains(TermMode::ALT_SCREEN) {
                     self.grid.reset_region(..);
@@ -3042,6 +3141,8 @@ pub mod test {
 
 #[cfg(test)]
 mod tests {
+    mod graphics_protocol;
+
     use super::*;
 
     use std::hint::black_box;
@@ -3289,60 +3390,8 @@ mod tests {
     }
 
     fn measurement_snapshot(term: &Term<VoidListener>) -> usize {
-        let has_virtual = term.graphics.has_virtual_placements();
-        let mut origins = std::collections::HashMap::new();
-        if has_virtual {
-            for line in term.grid.topmost_line().0..term.screen_lines() as i32 {
-                let mut previous = None;
-                for column in 0..term.columns() {
-                    let point = Point::new(Line(line), Column(column));
-                    let Some(placeholder) =
-                        crate::graphics::decode_placeholder(&term.grid[point], previous)
-                    else {
-                        previous = None;
-                        continue;
-                    };
-                    previous = Some(placeholder);
-                    origins
-                        .entry((placeholder.image_id, placeholder.placement_id))
-                        .and_modify(|origin: &mut Point| {
-                            origin.line = origin.line.min(point.line);
-                            origin.column = origin.column.min(point.column);
-                        })
-                        .or_insert(point);
-                }
-            }
-        }
-
-        let mut count = if term.graphics.has_classic_placements() {
-            term.graphics
-                .renderables_with_virtual_origins(|image_id, placement_id| {
-                    origins.get(&(image_id, placement_id)).copied()
-                })
-                .len()
-        } else {
-            0
-        };
-        for viewport_line in 0..term.screen_lines() {
-            let line = Line(viewport_line as i32 - term.grid.display_offset() as i32);
-            let mut previous = None;
-            for column in 0..term.columns() {
-                let point = Point::new(line, Column(column));
-                let Some(placeholder) =
-                    crate::graphics::decode_placeholder(&term.grid[point], previous)
-                else {
-                    previous = None;
-                    continue;
-                };
-                previous = Some(placeholder);
-                count += usize::from(
-                    term.graphics
-                        .placeholder_renderable(placeholder.image_id, placeholder.placement_id)
-                        .is_some(),
-                );
-            }
-        }
-        count
+        let snapshot = term.graphics_render_snapshot();
+        snapshot.classic.len() + snapshot.placeholders.len()
     }
 
     fn measurement_history_term(mode: &str) -> Term<VoidListener> {
@@ -3429,6 +3478,119 @@ mod tests {
     #[ignore = "snapshot scaling measurement"]
     fn measurement_history_relative_100000_lines() {
         run_history_measurement("relative");
+    }
+
+    #[test]
+    fn graphics_snapshot_indexes_virtual_identity_and_excludes_anonymous_images() {
+        let size = TermSize::new(3, 2);
+        let mut term = Term::new(Config::default(), &size, VoidListener);
+        let image = GraphicsCommand { image_id: Some(1), ..Default::default() };
+        term.graphics
+            .store(&image, crate::graphics::PixelBuffer::from_rgba(1, 1, Arc::from([1, 2, 3, 4])))
+            .unwrap();
+        for placement_id in [1, 2] {
+            term.graphics
+                .place(
+                    &GraphicsCommand {
+                        image_id: Some(1),
+                        placement_id: Some(placement_id),
+                        unicode_placeholder: Some(1),
+                        columns: Some(3),
+                        rows: Some(2),
+                        ..Default::default()
+                    },
+                    Point::default(),
+                )
+                .unwrap();
+        }
+        term.grid[Line(0)][Column(0)] = measurement_placeholder_cell(None);
+        term.grid[Line(0)][Column(1)] = measurement_placeholder_cell(Some(2));
+
+        let snapshot = term.graphics_render_snapshot();
+        assert_eq!(snapshot.placeholders.len(), 2);
+        assert!(
+            snapshot.placeholders[0].prototype.creation_serial
+                < snapshot.placeholders[1].prototype.creation_serial
+        );
+        assert_eq!(snapshot.placeholders[0].point, Point::new(0, Column(0)));
+        assert_eq!(snapshot.placeholders[1].point, Point::new(0, Column(1)));
+
+        let anonymous = GraphicsCommand {
+            unicode_placeholder: Some(1),
+            columns: Some(1),
+            rows: Some(1),
+            ..Default::default()
+        };
+        term.graphics
+            .store_and_place(
+                &anonymous,
+                crate::graphics::PixelBuffer::from_rgba(1, 1, Arc::from([5, 6, 7, 8])),
+                Point::default(),
+                1,
+                1,
+            )
+            .unwrap();
+        assert_eq!(term.graphics_render_snapshot().placeholders.len(), 2);
+    }
+
+    #[test]
+    fn graphics_snapshot_scans_history_only_for_required_relative_roots() {
+        let size = TermSize::new(6, 2);
+        let mut term = Term::new(Config::default(), &size, VoidListener);
+        term.grid = Grid::new(2, 6, 4);
+        term.grid.scroll_up(&(Line(0)..Line(2)), 4);
+        let parent = GraphicsCommand {
+            image_id: Some(1),
+            placement_id: Some(1),
+            unicode_placeholder: Some(1),
+            columns: Some(6),
+            rows: Some(2),
+            ..Default::default()
+        };
+        term.graphics
+            .store(&parent, crate::graphics::PixelBuffer::from_rgba(1, 1, Arc::from([1, 2, 3, 4])))
+            .unwrap();
+        term.graphics.place(&parent, Point::default()).unwrap();
+        let child = GraphicsCommand { image_id: Some(2), ..Default::default() };
+        term.graphics
+            .store(&child, crate::graphics::PixelBuffer::from_rgba(1, 1, Arc::from([5, 6, 7, 8])))
+            .unwrap();
+        term.graphics
+            .place(
+                &GraphicsCommand {
+                    image_id: Some(2),
+                    parent_image_id: Some(1),
+                    parent_placement_id: Some(1),
+                    ..Default::default()
+                },
+                Point::default(),
+            )
+            .unwrap();
+        let top = term.grid.topmost_line();
+        term.grid[top][Column(5)] = measurement_placeholder_cell(Some(1));
+        term.grid[top + 1i32][Column(2)] = measurement_placeholder_cell(Some(1));
+
+        let snapshot = term.graphics_render_snapshot();
+        assert_eq!(snapshot.classic.len(), 1);
+        assert_eq!(snapshot.classic[0].line, top);
+        assert_eq!(snapshot.classic[0].column, 2);
+
+        term.graphics = GraphicsState::new(4);
+        term.graphics
+            .store(&parent, crate::graphics::PixelBuffer::from_rgba(1, 1, Arc::from([1, 2, 3, 4])))
+            .unwrap();
+        term.graphics.place(&parent, Point::default()).unwrap();
+        term.grid.scroll_display(Scroll::Top);
+        let snapshot = term.graphics_render_snapshot();
+        assert_eq!(snapshot.placeholders[0].point.line, 0);
+    }
+
+    #[test]
+    fn graphics_snapshot_no_graphics_fast_path_is_empty() {
+        let term = Term::new(Config::default(), &TermSize::new(3, 2), VoidListener);
+        let snapshot = term.graphics_render_snapshot();
+        assert!(snapshot.classic.is_empty());
+        assert!(snapshot.placeholders.is_empty());
     }
 
     #[test]

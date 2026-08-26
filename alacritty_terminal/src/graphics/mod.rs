@@ -33,3 +33,18 @@ pub(crate) use transaction::{
     process_request,
 };
 pub(crate) use transport::load_transport;
+
+use crate::index::Point;
+
+#[derive(Default)]
+pub struct GraphicsRenderSnapshot {
+    pub classic: Vec<RenderableGraphic>,
+    pub placeholders: Vec<RenderablePlaceholder>,
+}
+
+pub struct RenderablePlaceholder {
+    pub point: Point<usize>,
+    pub row: u16,
+    pub column: u16,
+    pub prototype: RenderableGraphic,
+}

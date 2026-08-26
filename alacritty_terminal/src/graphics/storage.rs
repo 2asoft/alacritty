@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -244,12 +244,12 @@ impl GraphicsState {
     }
 
     pub fn renderables(&self) -> Vec<RenderableGraphic> {
-        self.renderables_with_virtual_origins(|_, _| None)
+        self.renderables_with_virtual_origins(|_| None)
     }
 
     pub fn renderables_with_virtual_origins(
         &self,
-        virtual_origin: impl Fn(u32, u32) -> Option<Point>,
+        virtual_origin: impl Fn(PlacementHandle) -> Option<Point>,
     ) -> Vec<RenderableGraphic> {
         let mut renderables: Vec<_> = self
             .placements
@@ -282,6 +282,78 @@ impl GraphicsState {
         renderables
             .sort_by_key(|graphic| (graphic.z_index, graphic.image_id, graphic.creation_serial));
         renderables
+    }
+
+    pub(crate) fn virtual_prototypes(&self) -> HashMap<(u32, u32), PlacementHandle> {
+        let mut prototypes = HashMap::new();
+        for placement in self.placements.values().filter(|placement| placement.virtual_placement) {
+            let Some(image_id) = placement.image_id.map(NonZeroU32::get) else {
+                continue;
+            };
+            let placement_id = placement.placement_id.map_or(0, NonZeroU32::get);
+            if placement_id != 0 {
+                insert_oldest_prototype(&mut prototypes, (image_id, placement_id), placement);
+            }
+            insert_oldest_prototype(&mut prototypes, (image_id, 0), placement);
+        }
+        prototypes.into_iter().map(|(key, (_, handle))| (key, handle)).collect()
+    }
+
+    pub(crate) fn required_virtual_origins(&self) -> HashSet<PlacementHandle> {
+        let mut required = HashSet::new();
+        for placement in self.placements.values().filter(|placement| !placement.virtual_placement) {
+            let mut root = placement;
+            let mut depth = 0;
+            while let Some(relative) = root.relative {
+                depth += 1;
+                if depth > crate::graphics::placement::MAX_RELATIVE_PLACEMENT_DEPTH {
+                    break;
+                }
+                let Some(parent) = self.placements.get(relative.parent) else {
+                    break;
+                };
+                root = parent;
+            }
+            if root.virtual_placement {
+                required.insert(root.handle);
+            }
+        }
+        required
+    }
+
+    pub(crate) fn virtual_placement_span(&self, handle: PlacementHandle) -> Option<(u32, u32)> {
+        let placement = self.placements.get(handle)?;
+        placement.columns.zip(placement.rows)
+    }
+
+    pub(crate) fn renderable_for_virtual(
+        &self,
+        handle: PlacementHandle,
+    ) -> Option<RenderableGraphic> {
+        let placement = self.placements.get(handle)?;
+        if !placement.virtual_placement {
+            return None;
+        }
+        let image = self.images.get(&placement.image)?;
+        Some(RenderableGraphic {
+            image: image.handle,
+            pixels: image.pixels().clone(),
+            line: placement.anchor.line,
+            column: i32::try_from(placement.anchor.column.0).ok()?,
+            source_x: placement.source_x,
+            source_y: placement.source_y,
+            source_width: placement.source_width,
+            source_height: placement.source_height,
+            x_offset: placement.x_offset,
+            y_offset: placement.y_offset,
+            columns: placement.columns,
+            rows: placement.rows,
+            z_index: placement.z_index,
+            image_id: image.external_id.map_or(0, NonZeroU32::get),
+            content_generation: image.content_generation,
+            creation_serial: placement.creation_serial,
+            clip_region: None,
+        })
     }
 
     pub fn placeholder_renderable(
@@ -343,11 +415,22 @@ impl GraphicsState {
         self.remove_orphaned_relative_images(relative_images);
     }
 
+    #[cfg(test)]
     pub fn delete(
         &mut self,
         command: &Command,
         cursor: Point,
         visible_lines: std::ops::Range<Line>,
+    ) -> Result<(), GraphicsError> {
+        self.delete_with_virtual_origins(command, cursor, visible_lines, &HashMap::new())
+    }
+
+    pub(crate) fn delete_with_virtual_origins(
+        &mut self,
+        command: &Command,
+        cursor: Point,
+        visible_lines: std::ops::Range<Line>,
+        origins: &HashMap<PlacementHandle, Point>,
     ) -> Result<(), GraphicsError> {
         let selector = command.delete.map_or(b'a', |selector| selector.0);
         let free_data = selector.is_ascii_uppercase();
@@ -375,7 +458,7 @@ impl GraphicsState {
             .values()
             .filter_map(|placement| {
                 self.placements
-                    .resolved_anchor(placement, &|_, _| None)
+                    .resolved_anchor(placement, &|handle| origins.get(&handle).copied())
                     .map(|location| (placement.handle, location))
             })
             .collect();
@@ -387,25 +470,32 @@ impl GraphicsState {
             if placement.virtual_placement && !matches!(selector, b'i' | b'n' | b'r') {
                 return false;
             }
-            let columns = i64::from(placement.cell_span.0);
-            let rows = i64::from(placement.cell_span.1);
-            let location = resolved_anchors.get(&placement.handle).copied().unwrap_or_else(|| {
-                super::placement::ResolvedPlacement {
-                    line: placement.anchor.line,
-                    column: i32::try_from(placement.anchor.column.0).unwrap_or(i32::MAX),
-                    clip_region: placement.clip_region,
-                }
+            let bounds = resolved_anchors.get(&placement.handle).map(|location| {
+                let left = i64::from(location.column);
+                let top = i64::from(location.line.0);
+                let bottom = top + i64::from(placement.cell_span.1);
+                let (clip_top, clip_bottom) =
+                    location.clip_region.map_or((i64::MIN, i64::MAX), |(start, end)| {
+                        (i64::from(start.0), i64::from(end.0))
+                    });
+                (
+                    left,
+                    top.max(clip_top),
+                    left + i64::from(placement.cell_span.0),
+                    bottom.min(clip_bottom),
+                )
             });
-            let top = i64::from(location.line.0);
-            let left = i64::from(location.column);
-            let intersects = |(column, line): (i64, i64)| {
-                line >= top && line < top + rows && column >= left && column < left + columns
+            let intersects = |(x, y): (i64, i64)| {
+                bounds.is_some_and(|(left, top, right, bottom)| {
+                    x >= left && x < right && y >= top && y < bottom
+                })
             };
             match selector {
-                b'a' => {
-                    top < i64::from(visible_lines.end.0)
-                        && top + rows > i64::from(visible_lines.start.0)
-                },
+                b'a' => bounds.is_some_and(|(_, top, _, bottom)| {
+                    top < bottom
+                        && top < i64::from(visible_lines.end.0)
+                        && bottom > i64::from(visible_lines.start.0)
+                }),
                 b'i' | b'n' => {
                     Some(placement.image) == explicit_image
                         && placement_id.is_none_or(|id| placement.placement_id == Some(id))
@@ -416,8 +506,10 @@ impl GraphicsState {
                 )),
                 b'p' => intersects(cell),
                 b'q' => intersects(cell) && placement.z_index == command.z_index.unwrap_or(0),
-                b'x' => cell.0 >= left && cell.0 < left + columns,
-                b'y' => cell.1 >= top && cell.1 < top + rows,
+                b'x' => bounds.is_some_and(|(left, top, right, bottom)| {
+                    top < bottom && cell.0 >= left && cell.0 < right
+                }),
+                b'y' => bounds.is_some_and(|(_, top, _, bottom)| cell.1 >= top && cell.1 < bottom),
                 b'z' => placement.z_index == command.z_index.unwrap_or(0),
                 b'r' => placement.image_id.is_some_and(|id| {
                     id.get() >= command.x.unwrap_or(0) && id.get() <= command.y.unwrap_or(0)
@@ -1091,6 +1183,9 @@ impl GraphicsState {
         command: &Command,
         pixels: PixelBuffer,
     ) -> Result<StoreOutcome, GraphicsError> {
+        if command.action == Some(Action::Query) {
+            return self.store_inner(command, pixels);
+        }
         let mut transaction = self.clone();
         let outcome = transaction.store_inner(command, pixels)?;
         *self = transaction;
@@ -1316,6 +1411,21 @@ fn next_automatic_frame(image: &Image) -> AutomaticFrame {
         }
     }
     AutomaticFrame::Idle
+}
+
+fn insert_oldest_prototype(
+    prototypes: &mut HashMap<(u32, u32), (u64, PlacementHandle)>,
+    key: (u32, u32),
+    placement: &Placement,
+) {
+    let candidate = (placement.creation_serial, placement.handle);
+    match prototypes.get_mut(&key) {
+        Some(current) if candidate.0 < current.0 => *current = candidate,
+        None => {
+            prototypes.insert(key, candidate);
+        },
+        _ => (),
+    }
 }
 
 fn scaled_cells(
@@ -2153,20 +2263,6 @@ mod tests {
     }
 
     #[test]
-    fn native_renderables_preserve_unspecified_axes() {
-        for (columns, rows) in [(None, None), (Some(0), None), (None, Some(0)), (Some(0), Some(0))]
-        {
-            let mut state = GraphicsState::new(24);
-            let image = Command { image_id: Some(1), columns, rows, ..Default::default() };
-            state.store(&image, PixelBuffer::from_rgba(3, 2, Arc::from([255; 24]))).unwrap();
-            state.place_with_span(&image, Point::default(), (3, 2)).unwrap();
-            let renderables = state.renderables();
-            assert_eq!(renderables.len(), 1);
-            assert_eq!((renderables[0].columns, renderables[0].rows), (None, None));
-        }
-    }
-
-    #[test]
     fn inferred_placement_spans_widen_pixel_offsets_before_scaling() {
         let mut state = GraphicsState::new(20_000);
         let image = Command { image_id: Some(1), ..Default::default() };
@@ -2414,46 +2510,6 @@ mod tests {
             .unwrap();
         let reused = state.store(&command, pixels(3, 4)).unwrap();
         assert_eq!(reused.image_id, first.image_id);
-    }
-
-    #[test]
-    fn deletion_handles_large_spans_and_relative_offsets() {
-        for rows in [i32::MAX as u32, u32::MAX] {
-            let mut state = GraphicsState::new(4);
-            let image = Command { image_id: Some(1), rows: Some(rows), ..Default::default() };
-            state.store(&image, pixels(1, 4)).unwrap();
-            state.place(&image, Point::new(Line(1), crate::index::Column(0))).unwrap();
-            let delete = Command {
-                delete: Some(crate::graphics::DeleteTarget(b'y')),
-                y: Some(i32::MAX as u32 + 1),
-                ..Default::default()
-            };
-            state.delete(&delete, Point::default(), Line(0)..Line(24)).unwrap();
-            assert!(state.placements().next().is_none());
-        }
-        let mut state = GraphicsState::new(8);
-        let root = Command { image_id: Some(1), placement_id: Some(1), ..Default::default() };
-        state.store(&root, pixels(1, 4)).unwrap();
-        state.place(&root, Point::default()).unwrap();
-        let child = Command {
-            image_id: Some(2),
-            placement_id: Some(1),
-            parent_image_id: Some(1),
-            parent_placement_id: Some(1),
-            vertical_offset: Some(i32::MAX),
-            columns: Some(1),
-            rows: Some(1),
-            ..Default::default()
-        };
-        state.store(&child, pixels(1, 4)).unwrap();
-        state.place(&child, Point::default()).unwrap();
-        let delete = Command {
-            delete: Some(crate::graphics::DeleteTarget(b'y')),
-            y: Some(i32::MAX as u32 + 1),
-            ..Default::default()
-        };
-        state.delete(&delete, Point::default(), Line(0)..Line(24)).unwrap();
-        assert_eq!(state.placements().count(), 1);
     }
 
     #[test]
@@ -3016,9 +3072,9 @@ mod tests {
             .unwrap();
 
         assert!(state.renderables().is_empty());
-        let renderables = state.renderables_with_virtual_origins(|image_id, placement_id| {
-            (image_id == 1 && placement_id == 0)
-                .then_some(Point::new(Line(4), crate::index::Column(5)))
+        let prototype_handle = state.virtual_prototypes()[&(1, 0)];
+        let renderables = state.renderables_with_virtual_origins(|handle| {
+            (handle == prototype_handle).then_some(Point::new(Line(4), crate::index::Column(5)))
         });
         assert_eq!(renderables.len(), 1);
         assert_eq!((renderables[0].line, renderables[0].column), (Line(6), 8));

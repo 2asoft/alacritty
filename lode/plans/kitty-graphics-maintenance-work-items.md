@@ -105,6 +105,8 @@ Suggested commit: `perf(graphics): prepare animation frames outside terminal loc
 
 ### Work item 5: Build the terminal graphics render snapshot
 
+Status: Complete.
+
 Independent of work items 1 through 4 after work item 0.
 
 1. Add `GraphicsRenderSnapshot` and `RenderablePlaceholder`.
