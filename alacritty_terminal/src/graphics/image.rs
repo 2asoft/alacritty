@@ -65,7 +65,7 @@ impl PixelBuffer {
         &self.bytes
     }
 
-    pub fn storage_bytes(&self) -> usize {
+    pub(crate) fn storage_bytes(&self) -> usize {
         self.bytes.len()
     }
 }

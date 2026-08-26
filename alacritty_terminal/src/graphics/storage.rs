@@ -29,7 +29,7 @@ impl ImageHandle {
 }
 
 #[derive(Clone, Debug)]
-pub struct Image {
+pub(crate) struct Image {
     handle: ImageHandle,
     external_id: Option<NonZeroU32>,
     image_number: Option<u32>,
@@ -49,16 +49,14 @@ pub struct Image {
 }
 
 impl Image {
+    #[cfg(test)]
     pub fn handle(&self) -> ImageHandle {
         self.handle
     }
 
+    #[cfg(test)]
     pub fn external_id(&self) -> Option<NonZeroU32> {
         self.external_id
-    }
-
-    pub fn image_number(&self) -> Option<u32> {
-        self.image_number
     }
 
     pub fn pixels(&self) -> &PixelBuffer {
@@ -73,10 +71,6 @@ impl Image {
         }
     }
 
-    pub fn content_generation(&self) -> u64 {
-        self.content_generation
-    }
-
     fn storage_bytes(&self) -> usize {
         self.frames.iter().fold(self.pixels.storage_bytes(), |total, frame| {
             total.saturating_add(frame.pixels.storage_bytes())
@@ -85,7 +79,7 @@ impl Image {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct StoreOutcome {
+pub(crate) struct StoreOutcome {
     pub handle: ImageHandle,
     pub image_id: Option<NonZeroU32>,
     pub image_number: Option<u32>,
@@ -153,7 +147,7 @@ impl FrameWork {
 }
 
 #[derive(Clone, Debug)]
-pub struct GraphicsState {
+pub(crate) struct GraphicsState {
     images: HashMap<ImageHandle, Image>,
     image_ids: HashMap<NonZeroU32, ImageHandle>,
     placements: Placements,
@@ -178,6 +172,7 @@ impl GraphicsState {
         }
     }
 
+    #[cfg(test)]
     pub fn used_bytes(&self) -> usize {
         self.used_bytes
     }
@@ -214,14 +209,17 @@ impl GraphicsState {
         self.storage_limit
     }
 
+    #[cfg(test)]
     pub fn images(&self) -> impl Iterator<Item = &Image> {
         self.images.values()
     }
 
+    #[cfg(test)]
     pub fn image_by_id(&self, id: NonZeroU32) -> Option<&Image> {
         self.image_ids.get(&id).and_then(|handle| self.images.get(handle))
     }
 
+    #[cfg(test)]
     pub fn placements(&self) -> impl Iterator<Item = &Placement> {
         self.placements.values()
     }
@@ -356,6 +354,7 @@ impl GraphicsState {
         })
     }
 
+    #[cfg(test)]
     pub fn placeholder_renderable(
         &self,
         image_id: u32,
@@ -618,7 +617,8 @@ impl GraphicsState {
         }
     }
 
-    pub fn place(
+    #[cfg(test)]
+    pub(crate) fn place_for_test(
         &mut self,
         command: &Command,
         anchor: Point,
@@ -630,18 +630,6 @@ impl GraphicsState {
         .ok_or(GraphicsError::NotFound)?;
         let handle = image.handle;
         let image_id = image.external_id;
-        let span = self.placement_cell_span(command, 1, 1)?;
-        let inserted = self.insert_placement(handle, image_id, command, anchor, span)?;
-        self.finish_placement_insert(inserted)
-    }
-
-    pub fn place_handle(
-        &mut self,
-        handle: ImageHandle,
-        command: &Command,
-        anchor: Point,
-    ) -> Result<PlacementHandle, GraphicsError> {
-        let image_id = self.images.get(&handle).ok_or(GraphicsError::NotFound)?.external_id;
         let span = self.placement_cell_span(command, 1, 1)?;
         let inserted = self.insert_placement(handle, image_id, command, anchor, span)?;
         self.finish_placement_insert(inserted)
@@ -1500,8 +1488,8 @@ mod tests {
         };
         state.store(&parent, pixels(1, 4)).unwrap();
         state.store(&child, pixels(2, 4)).unwrap();
-        state.place(&parent, Point::default()).unwrap();
-        state.place(&child, Point::default()).unwrap();
+        state.place_for_test(&parent, Point::default()).unwrap();
+        state.place_for_test(&child, Point::default()).unwrap();
         let replacement = Command { image_id: Some(2), ..Default::default() };
         let large = PixelBuffer::from_rgba(3, 1, Arc::from(vec![3; 12]));
         let mut exhausted = state.clone();
@@ -1813,7 +1801,7 @@ mod tests {
         assert!(state.image_by_id(NonZeroU32::new(1).unwrap()).is_some());
         assert!(state.image_by_id(NonZeroU32::new(1).unwrap()).unwrap().frames.is_empty());
         state
-            .place(&Command { image_id: Some(1), ..Default::default() }, Point::default())
+            .place_for_test(&Command { image_id: Some(1), ..Default::default() }, Point::default())
             .unwrap();
 
         state
@@ -1963,7 +1951,7 @@ mod tests {
                 pixels(2, 4),
             )
             .unwrap();
-        state.place(&image, Point::default()).unwrap();
+        state.place_for_test(&image, Point::default()).unwrap();
         state
             .control_animation(&Command {
                 action: Some(Action::Animate),
@@ -1995,7 +1983,7 @@ mod tests {
                 pixels(2, 4),
             )
             .unwrap();
-        state.place(&image, Point::default()).unwrap();
+        state.place_for_test(&image, Point::default()).unwrap();
         state
             .control_animation(&Command {
                 image_id: Some(1),
@@ -2039,7 +2027,7 @@ mod tests {
                 pixels(2, 4),
             )
             .unwrap();
-        state.place(&image, Point::default()).unwrap();
+        state.place_for_test(&image, Point::default()).unwrap();
         state
             .control_animation(&Command {
                 image_id: Some(1),
@@ -2083,7 +2071,7 @@ mod tests {
                 pixels(3, 4),
             )
             .unwrap();
-        state.place(&image, Point::default()).unwrap();
+        state.place_for_test(&image, Point::default()).unwrap();
         state
             .control_animation(&Command {
                 image_id: Some(1),
@@ -2107,7 +2095,7 @@ mod tests {
         let mut state = GraphicsState::new(8);
         let command = Command { image_id: Some(1), ..Default::default() };
         state.store(&command, pixels(1, 4)).unwrap();
-        state.place(&command, Point::default()).unwrap();
+        state.place_for_test(&command, Point::default()).unwrap();
         state
             .store_frame(
                 &Command { image_id: Some(1), z_index: Some(-1), ..Default::default() },
@@ -2144,7 +2132,7 @@ mod tests {
                 pixels(2, 4),
             )
             .unwrap();
-        state.place(&image, Point::default()).unwrap();
+        state.place_for_test(&image, Point::default()).unwrap();
         state
             .control_animation(&Command {
                 image_id: Some(1),
@@ -2173,7 +2161,7 @@ mod tests {
                 pixels(2, 4),
             )
             .unwrap();
-        state.place(&image, Point::default()).unwrap();
+        state.place_for_test(&image, Point::default()).unwrap();
         state
             .control_animation(&Command {
                 image_id: Some(1),
@@ -2241,7 +2229,7 @@ mod tests {
         let mut state = GraphicsState::new(8);
         let old = Command { image_id: Some(1), placement_id: Some(1), ..Default::default() };
         state.store(&old, pixels(1, 4)).unwrap();
-        state.place(&old, Point::default()).unwrap();
+        state.place_for_test(&old, Point::default()).unwrap();
         let replacement = Command {
             action: Some(Action::TransmitAndPlace),
             image_id: Some(1),
@@ -2380,7 +2368,7 @@ mod tests {
         state.store(&image, pixels(1, 4)).unwrap();
         for placement_id in 1..=crate::graphics::placement::MAX_PLACEMENTS_PER_BUFFER as u32 {
             state
-                .place(
+                .place_for_test(
                     &Command { placement_id: Some(placement_id), ..image.clone() },
                     Point::default(),
                 )
@@ -2391,13 +2379,13 @@ mod tests {
             crate::graphics::placement::MAX_PLACEMENTS_PER_BUFFER
         );
         state
-            .place(
+            .place_for_test(
                 &Command { placement_id: Some(1), ..image.clone() },
                 Point::new(Line(1), crate::index::Column(1)),
             )
             .unwrap();
         assert_eq!(
-            state.place(
+            state.place_for_test(
                 &Command {
                     placement_id: Some(
                         crate::graphics::placement::MAX_PLACEMENTS_PER_BUFFER as u32 + 1
@@ -2441,7 +2429,7 @@ mod tests {
                     let _ = state.store(&command, pixels(id as u8, 4));
                 },
                 1 => {
-                    let _ = state.place(
+                    let _ = state.place_for_test(
                         &Command { placement_id: Some(((random >> 16) as u32 % 4) + 1), ..command },
                         Point::new(
                             Line((random as i32 % 8).abs()),
@@ -2517,9 +2505,11 @@ mod tests {
         let mut state = GraphicsState::new(16);
         let image = Command { image_id: Some(1), ..Default::default() };
         state.store(&image, pixels(1, 4)).unwrap();
-        state.place(&Command { placement_id: Some(7), ..image.clone() }, Point::default()).unwrap();
         state
-            .place(
+            .place_for_test(&Command { placement_id: Some(7), ..image.clone() }, Point::default())
+            .unwrap();
+        state
+            .place_for_test(
                 &Command { placement_id: Some(7), ..image.clone() },
                 Point::new(Line(2), crate::index::Column(3)),
             )
@@ -2530,8 +2520,8 @@ mod tests {
             Point::new(Line(2), crate::index::Column(3))
         );
 
-        state.place(&image, Point::default()).unwrap();
-        state.place(&image, Point::new(Line(1), crate::index::Column(1))).unwrap();
+        state.place_for_test(&image, Point::default()).unwrap();
+        state.place_for_test(&image, Point::new(Line(1), crate::index::Column(1))).unwrap();
         assert_eq!(state.placements().count(), 3);
 
         state.store(&image, pixels(2, 4)).unwrap();
@@ -2560,7 +2550,7 @@ mod tests {
         let mut state = GraphicsState::new(4);
         let image = Command { image_id: Some(id.get()), ..Default::default() };
         state.store(&image, pixels(1, 4)).unwrap();
-        state.place(&image, Point::new(Line(0), crate::index::Column(0))).unwrap();
+        state.place_for_test(&image, Point::new(Line(0), crate::index::Column(0))).unwrap();
         let visible = Line(0)..Line(10);
 
         let soft = Command {
@@ -2586,7 +2576,7 @@ mod tests {
                 state.store(&image, pixels(id as u8, 4)).unwrap();
                 if id != 3 {
                     state
-                        .place(
+                        .place_for_test(
                             &Command {
                                 placement_id: Some(1),
                                 columns: Some(if id == 1 { 3 } else { 2 }),
@@ -2717,7 +2707,7 @@ mod tests {
             let image = Command { image_id: Some(1), ..Default::default() };
             state.store(&image, pixels(1, 4)).unwrap();
             state
-                .place(
+                .place_for_test(
                     &Command { placement_id: Some(7), z_index: Some(5), ..image },
                     Point::default(),
                 )
@@ -2743,7 +2733,7 @@ mod tests {
             let command = Command { image_number: Some(9), ..Default::default() };
             state.store(&command, pixels(placement_id, 4)).unwrap();
             state
-                .place(
+                .place_for_test(
                     &Command {
                         image_number: Some(9),
                         placement_id: Some(placement_id as u32),
@@ -2781,7 +2771,7 @@ mod tests {
                 ..Default::default()
             };
             state.store(&virtual_image, pixels(1, 4)).unwrap();
-            state.place(&virtual_image, Point::default()).unwrap();
+            state.place_for_test(&virtual_image, Point::default()).unwrap();
             state
                 .delete(
                     &Command {
@@ -2808,7 +2798,7 @@ mod tests {
                 ..Default::default()
             };
             state.store(&virtual_image, pixels(1, 4)).unwrap();
-            state.place(&virtual_image, Point::default()).unwrap();
+            state.place_for_test(&virtual_image, Point::default()).unwrap();
             let mut delete = Command {
                 delete: Some(crate::graphics::DeleteTarget(selector)),
                 image_id: Some(1),
@@ -2840,7 +2830,7 @@ mod tests {
                 ..Default::default()
             };
             state.store(&command, pixels(1, 4)).unwrap();
-            state.place(&command, Point::new(Line(4), crate::index::Column(75))).unwrap();
+            state.place_for_test(&command, Point::new(Line(4), crate::index::Column(75))).unwrap();
             let region = Line(3)..Line(18);
 
             if scroll_up {
@@ -2863,8 +2853,8 @@ mod tests {
         let image = Command { image_id: Some(1), ..Default::default() };
         state.store(&image, pixels(1, 4)).unwrap();
         let contained = Command { columns: Some(1), rows: Some(4), ..image.clone() };
-        state.place(&contained, Point::new(Line(2), crate::index::Column(0))).unwrap();
-        state.place(&contained, Point::new(Line(0), crate::index::Column(1))).unwrap();
+        state.place_for_test(&contained, Point::new(Line(2), crate::index::Column(0))).unwrap();
+        state.place_for_test(&contained, Point::new(Line(0), crate::index::Column(1))).unwrap();
         let region = Line(1)..Line(8);
 
         state.scroll_up(&region, 3, 0, false);
@@ -2883,8 +2873,8 @@ mod tests {
         let mut state = GraphicsState::new(4);
         let image = Command { image_id: Some(1), rows: Some(2), ..Default::default() };
         state.store(&image, pixels(1, 4)).unwrap();
-        state.place(&image, Point::new(Line(2), crate::index::Column(0))).unwrap();
-        state.place(&image, Point::new(Line(0), crate::index::Column(1))).unwrap();
+        state.place_for_test(&image, Point::new(Line(2), crate::index::Column(0))).unwrap();
+        state.place_for_test(&image, Point::new(Line(0), crate::index::Column(1))).unwrap();
         let region = Line(1)..Line(8);
 
         state.scroll_down(&region, 2, false);
@@ -2900,7 +2890,7 @@ mod tests {
         let mut state = GraphicsState::new(4);
         let command = Command { image_id: Some(1), ..Default::default() };
         state.store(&command, pixels(1, 4)).unwrap();
-        state.place(&command, Point::new(Line(0), crate::index::Column(2))).unwrap();
+        state.place_for_test(&command, Point::new(Line(0), crate::index::Column(2))).unwrap();
         let region = Line(0)..Line(10);
 
         state.scroll_up(&region, 1, 2, true);
@@ -2926,10 +2916,10 @@ mod tests {
             vertical_offset: Some(-1),
             ..Default::default()
         };
-        assert_eq!(state.place(&relative, Point::default()), Err(GraphicsError::NoParent));
+        assert_eq!(state.place_for_test(&relative, Point::default()), Err(GraphicsError::NoParent));
 
-        state.place(&parent, Point::new(Line(3), crate::index::Column(4))).unwrap();
-        state.place(&relative, Point::default()).unwrap();
+        state.place_for_test(&parent, Point::new(Line(3), crate::index::Column(4))).unwrap();
+        state.place_for_test(&relative, Point::default()).unwrap();
         let child = state
             .renderables()
             .into_iter()
@@ -2950,7 +2940,7 @@ mod tests {
         assert_eq!((child.line, child.column), (Line(1), 6));
 
         state
-            .place(
+            .place_for_test(
                 &Command { placement_id: Some(2), horizontal_offset: Some(-6), ..relative },
                 Point::default(),
             )
@@ -2966,19 +2956,19 @@ mod tests {
         state.store(&parent, pixels(1, 4)).unwrap();
         state.store(&child, pixels(2, 4)).unwrap();
         state
-            .place(
+            .place_for_test(
                 &Command { placement_id: Some(7), ..parent.clone() },
                 Point::new(Line(1), crate::index::Column(1)),
             )
             .unwrap();
         state
-            .place(
+            .place_for_test(
                 &Command { placement_id: Some(3), ..parent },
                 Point::new(Line(2), crate::index::Column(2)),
             )
             .unwrap();
         state
-            .place(
+            .place_for_test(
                 &Command { placement_id: Some(1), parent_image_id: Some(1), ..child },
                 Point::default(),
             )
@@ -2999,7 +2989,7 @@ mod tests {
             ..Default::default()
         };
         state.store(&prototype, pixels(1, 4)).unwrap();
-        state.place(&prototype, Point::default()).unwrap();
+        state.place_for_test(&prototype, Point::default()).unwrap();
         state
             .delete(
                 &Command {
@@ -3022,13 +3012,13 @@ mod tests {
                 .unwrap();
         }
         state
-            .place(
+            .place_for_test(
                 &Command { image_id: Some(1), placement_id: Some(1), ..Default::default() },
                 Point::default(),
             )
             .unwrap();
         assert_eq!(
-            state.place(
+            state.place_for_test(
                 &Command {
                     image_id: Some(2),
                     unicode_placeholder: Some(1),
@@ -3056,9 +3046,9 @@ mod tests {
         let child_image = Command { image_id: Some(2), ..Default::default() };
         state.store(&prototype, pixels(1, 4)).unwrap();
         state.store(&child_image, pixels(2, 4)).unwrap();
-        state.place(&prototype, Point::default()).unwrap();
+        state.place_for_test(&prototype, Point::default()).unwrap();
         state
-            .place(
+            .place_for_test(
                 &Command {
                     image_id: Some(2),
                     placement_id: Some(1),
@@ -3085,10 +3075,12 @@ mod tests {
         let mut state = GraphicsState::new(4);
         let image = Command { image_id: Some(1), ..Default::default() };
         state.store(&image, pixels(1, 4)).unwrap();
-        state.place(&Command { placement_id: Some(1), ..image.clone() }, Point::default()).unwrap();
+        state
+            .place_for_test(&Command { placement_id: Some(1), ..image.clone() }, Point::default())
+            .unwrap();
         for placement_id in 2..=9 {
             state
-                .place(
+                .place_for_test(
                     &Command {
                         placement_id: Some(placement_id),
                         parent_image_id: Some(1),
@@ -3100,7 +3092,7 @@ mod tests {
                 .unwrap();
         }
         assert_eq!(
-            state.place(
+            state.place_for_test(
                 &Command {
                     placement_id: Some(10),
                     parent_image_id: Some(1),
@@ -3112,7 +3104,7 @@ mod tests {
             Err(GraphicsError::TooDeep)
         );
         assert_eq!(
-            state.place(
+            state.place_for_test(
                 &Command {
                     placement_id: Some(1),
                     parent_image_id: Some(1),
@@ -3124,7 +3116,7 @@ mod tests {
             Err(GraphicsError::Cycle)
         );
         assert_eq!(
-            state.place(
+            state.place_for_test(
                 &Command {
                     placement_id: Some(9),
                     parent_image_id: Some(1),
@@ -3144,9 +3136,9 @@ mod tests {
         let child = Command { image_id: Some(2), ..Default::default() };
         state.store(&parent, pixels(1, 4)).unwrap();
         state.store(&child, pixels(2, 4)).unwrap();
-        state.place(&parent, Point::default()).unwrap();
+        state.place_for_test(&parent, Point::default()).unwrap();
         state
-            .place(
+            .place_for_test(
                 &Command {
                     image_id: Some(2),
                     placement_id: Some(1),
@@ -3158,7 +3150,7 @@ mod tests {
             )
             .unwrap();
 
-        state.place(&parent, Point::new(Line(1), crate::index::Column(1))).unwrap();
+        state.place_for_test(&parent, Point::new(Line(1), crate::index::Column(1))).unwrap();
         assert_eq!(state.placements().count(), 1);
         assert!(state.image_by_id(NonZeroU32::new(2).unwrap()).is_none());
     }
@@ -3170,9 +3162,9 @@ mod tests {
         let child = Command { image_id: Some(2), ..Default::default() };
         state.store(&parent, pixels(1, 4)).unwrap();
         state.store(&child, pixels(2, 4)).unwrap();
-        state.place(&parent, Point::default()).unwrap();
+        state.place_for_test(&parent, Point::default()).unwrap();
         state
-            .place(
+            .place_for_test(
                 &Command {
                     image_id: Some(2),
                     placement_id: Some(1),
@@ -3206,7 +3198,7 @@ mod tests {
         for id in [3, 1, 2] {
             let image = Command { image_id: Some(id), z_index: Some(5), ..Default::default() };
             state.store(&image, pixels(id as u8, 4)).unwrap();
-            state.place(&image, Point::default()).unwrap();
+            state.place_for_test(&image, Point::default()).unwrap();
         }
         let ids: Vec<_> = state.renderables().into_iter().map(|image| image.image_id).collect();
         assert_eq!(ids, [1, 2, 3]);
@@ -3221,7 +3213,7 @@ mod tests {
         state.store(&transient, pixels(2, 4)).unwrap();
         let transient_handle = state.command_image_handle(&transient).unwrap();
         state
-            .place(
+            .place_for_test(
                 &Command { image_id: Some(2), usage: Some(0), ..Default::default() },
                 Point::new(Line(-1), crate::index::Column(0)),
             )
@@ -3242,7 +3234,7 @@ mod tests {
         assert!(state.image_by_id(NonZeroU32::new(1).unwrap()).is_some());
         assert!(state.image_by_id(NonZeroU32::new(2).unwrap()).is_none());
 
-        state.place(&first, Point::default()).unwrap();
+        state.place_for_test(&first, Point::default()).unwrap();
         state.store(&Command { image_id: Some(4), ..Default::default() }, pixels(4, 4)).unwrap();
         assert!(state.image_by_id(NonZeroU32::new(1).unwrap()).is_some());
         assert!(state.image_by_id(NonZeroU32::new(3).unwrap()).is_none());
@@ -3253,9 +3245,9 @@ mod tests {
         let visible = Command { image_id: Some(1), ..Default::default() };
         let history = Command { image_id: Some(2), ..Default::default() };
         state.store(&visible, pixels(1, 4)).unwrap();
-        state.place(&visible, Point::new(Line(0), crate::index::Column(0))).unwrap();
+        state.place_for_test(&visible, Point::new(Line(0), crate::index::Column(0))).unwrap();
         state.store(&history, pixels(2, 4)).unwrap();
-        state.place(&history, Point::new(Line(-2), crate::index::Column(0))).unwrap();
+        state.place_for_test(&history, Point::new(Line(-2), crate::index::Column(0))).unwrap();
         state.store(&Command { image_id: Some(3), ..Default::default() }, pixels(3, 4)).unwrap();
         assert!(state.image_by_id(NonZeroU32::new(1).unwrap()).is_some());
         assert!(state.image_by_id(NonZeroU32::new(2).unwrap()).is_none());
@@ -3268,10 +3260,10 @@ mod tests {
         state.set_visible_lines(1);
         let visible = Command { image_id: Some(1), ..Default::default() };
         state.store(&visible, PixelBuffer::from_rgba(1, 2, Arc::from([255; 8]))).unwrap();
-        state.place(&visible, Point::new(Line(-1), crate::index::Column(0))).unwrap();
+        state.place_for_test(&visible, Point::new(Line(-1), crate::index::Column(0))).unwrap();
         let hidden = Command { image_id: Some(2), ..Default::default() };
         state.store(&hidden, pixels(2, 4)).unwrap();
-        state.place(&hidden, Point::new(Line(-2), crate::index::Column(0))).unwrap();
+        state.place_for_test(&hidden, Point::new(Line(-2), crate::index::Column(0))).unwrap();
         state.store(&Command { image_id: Some(3), ..Default::default() }, pixels(3, 4)).unwrap();
         assert!(state.image_by_id(NonZeroU32::new(1).unwrap()).is_some());
         assert!(state.image_by_id(NonZeroU32::new(2).unwrap()).is_none());
@@ -3334,7 +3326,7 @@ mod tests {
         for generation in 0..100 {
             let image = Command { image_id: Some(1), ..Default::default() };
             state.store(&image, pixels(generation, 4)).unwrap();
-            state.place(&image, Point::default()).unwrap();
+            state.place_for_test(&image, Point::default()).unwrap();
             state
                 .delete(
                     &Command {

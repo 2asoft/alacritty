@@ -762,12 +762,6 @@ impl<T> Term<T> {
         RenderableContent::new(self)
     }
 
-    /// Take the graphics command at the current ordered parser barrier.
-    #[cfg(test)]
-    pub(crate) fn take_graphics_command(&mut self) -> Option<Result<ParsedCommand, GraphicsError>> {
-        self.graphics_command.take()
-    }
-
     /// Take or assemble the graphics request at the current ordered parser barrier.
     fn take_graphics_request(&mut self) -> Option<GraphicsRequest> {
         let parsed = match self.graphics_command.take()? {
@@ -847,25 +841,6 @@ impl<T> Term<T> {
             decode_limit,
             local_transmission: self.config.graphics.local_transmission,
         }))
-    }
-
-    #[cfg(test)]
-    fn begin_graphics_processing(&mut self, _request: &GraphicsRequest) {
-        self.graphics_processing = true;
-        self.cancel_graphics_processing = false;
-    }
-
-    #[cfg(test)]
-    fn graphics_processing_options(&self) -> (usize, bool) {
-        (self.config.graphics.storage_limit, self.config.graphics.local_transmission)
-    }
-
-    #[cfg(test)]
-    fn graphics_processing_options_for(&self, request: &GraphicsRequest) -> (usize, bool) {
-        let limit = request.command().map_or(self.config.graphics.storage_limit, |command| {
-            self.graphics.decode_limit(command)
-        });
-        (limit, self.config.graphics.local_transmission)
     }
 
     pub(crate) fn commit_deferred_graphics(
@@ -1151,7 +1126,8 @@ impl<T> Term<T> {
     }
 
     /// Graphics state paired with the active grid.
-    pub fn graphics(&self) -> &GraphicsState {
+    #[cfg(test)]
+    pub(crate) fn graphics(&self) -> &GraphicsState {
         &self.graphics
     }
 
@@ -3190,8 +3166,11 @@ mod tests {
         }
     }
 
-    fn graphics_request(command: GraphicsCommand) -> GraphicsRequest {
-        GraphicsRequest::Command { command, payload: EncodedPayload::Single(Vec::new()) }
+    fn process_request_for_test<T>(term: &Term<T>, request: GraphicsRequest) -> ProcessedCommand {
+        let limit = request.command().map_or(term.config.graphics.storage_limit, |command| {
+            term.graphics.decode_limit(command)
+        });
+        crate::graphics::process_request(request, limit, term.config.graphics.local_transmission)
     }
 
     fn process_parsed(
@@ -3264,9 +3243,7 @@ mod tests {
             let request = term.take_graphics_request();
             if remaining == 0 {
                 let request = request.expect("final chunk must complete the request");
-                term.begin_graphics_processing(&request);
-                let options = term.graphics_processing_options_for(&request);
-                let processed = crate::graphics::process_request(request, options.0, options.1);
+                let processed = process_request_for_test(&term, request);
                 term.commit_graphics_command(processed);
             } else {
                 assert!(request.is_none());
@@ -3415,7 +3392,7 @@ mod tests {
         term.graphics
             .store(&parent, crate::graphics::PixelBuffer::from_rgba(1, 1, Arc::from([1, 2, 3, 4])))
             .unwrap();
-        term.graphics.place(&parent, Point::default()).unwrap();
+        term.graphics.place_for_test(&parent, Point::default()).unwrap();
         let placeholder = measurement_placeholder_cell(placement_id);
         let top = term.grid.topmost_line();
         term.grid[top][Column(0)] = placeholder.clone();
@@ -3430,7 +3407,7 @@ mod tests {
                 )
                 .unwrap();
             term.graphics
-                .place(
+                .place_for_test(
                     &GraphicsCommand {
                         image_id: Some(2),
                         parent_image_id: Some(1),
@@ -3490,7 +3467,7 @@ mod tests {
             .unwrap();
         for placement_id in [1, 2] {
             term.graphics
-                .place(
+                .place_for_test(
                     &GraphicsCommand {
                         image_id: Some(1),
                         placement_id: Some(placement_id),
@@ -3550,13 +3527,13 @@ mod tests {
         term.graphics
             .store(&parent, crate::graphics::PixelBuffer::from_rgba(1, 1, Arc::from([1, 2, 3, 4])))
             .unwrap();
-        term.graphics.place(&parent, Point::default()).unwrap();
+        term.graphics.place_for_test(&parent, Point::default()).unwrap();
         let child = GraphicsCommand { image_id: Some(2), ..Default::default() };
         term.graphics
             .store(&child, crate::graphics::PixelBuffer::from_rgba(1, 1, Arc::from([5, 6, 7, 8])))
             .unwrap();
         term.graphics
-            .place(
+            .place_for_test(
                 &GraphicsCommand {
                     image_id: Some(2),
                     parent_image_id: Some(1),
@@ -3579,7 +3556,7 @@ mod tests {
         term.graphics
             .store(&parent, crate::graphics::PixelBuffer::from_rgba(1, 1, Arc::from([1, 2, 3, 4])))
             .unwrap();
-        term.graphics.place(&parent, Point::default()).unwrap();
+        term.graphics.place_for_test(&parent, Point::default()).unwrap();
         term.grid.scroll_display(Scroll::Top);
         let snapshot = term.graphics_render_snapshot();
         assert_eq!(snapshot.placeholders[0].point.line, 0);
@@ -3604,7 +3581,7 @@ mod tests {
             .unwrap();
         for placement_id in 1..=65_536 {
             term.graphics
-                .place(
+                .place_for_test(
                     &GraphicsCommand {
                         image_id: Some(1),
                         placement_id: Some(placement_id),
@@ -3689,7 +3666,7 @@ mod tests {
         let mut term = Term::new(config, &size, listener);
         let mut parser = ansi::Processor::<ansi::StdSyncHandler>::new();
         let _consumed = parser.advance_until_terminated(&mut term, b"\x1b_Gi=invalid\x1b\\");
-        let command = term.take_graphics_command().unwrap();
+        let command = term.graphics_command.take().unwrap();
         term.commit_graphics_command(process_parsed(command, 4, true));
 
         assert!(responses.lock().unwrap().is_empty());
@@ -3706,10 +3683,8 @@ mod tests {
 
         let consumed = parser.advance_until_terminated(&mut term, input);
         let request = term.take_graphics_request().unwrap();
-        let options = term.graphics_processing_options_for(&request);
-        term.commit_graphics_command(crate::graphics::process_request(
-            request, options.0, options.1,
-        ));
+        let processed = process_request_for_test(&term, request);
+        term.commit_graphics_command(processed);
 
         assert_eq!(consumed, input.len());
         assert_eq!(responses.lock().unwrap().as_slice(), ["\x1b_Gi=35;OK\x1b\\"]);
@@ -3725,7 +3700,7 @@ mod tests {
         let mut parser = ansi::Processor::<ansi::StdSyncHandler>::new();
         let _consumed =
             parser.advance_until_terminated(&mut term, b"\x1b_Gi=31,f=24,s=1,v=1;AQI=\x1b\\");
-        let command = term.take_graphics_command().unwrap();
+        let command = term.graphics_command.take().unwrap();
         term.commit_graphics_command(process_parsed(command, 4, true));
 
         assert_eq!(responses.lock().unwrap().as_slice(), ["\x1b_Gi=31;ENODATA\x1b\\"]);
@@ -3741,7 +3716,7 @@ mod tests {
         let mut parser = ansi::Processor::<ansi::StdSyncHandler>::new();
         let _consumed =
             parser.advance_until_terminated(&mut term, b"\x1b_Gi=31,f=42,s=1,v=1;AAAA\x1b\\");
-        let command = term.take_graphics_command().unwrap();
+        let command = term.graphics_command.take().unwrap();
         term.commit_graphics_command(process_parsed(command, 4, true));
 
         assert_eq!(responses.lock().unwrap().as_slice(), ["\x1b_Gi=31;EINVAL\x1b\\"]);
@@ -3840,9 +3815,12 @@ mod tests {
         let input = b"\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[c";
 
         let consumed = parser.advance_until_terminated(&mut term, input);
-        let command = term.take_graphics_command().unwrap();
-        let options = term.graphics_processing_options();
-        term.commit_graphics_command(process_parsed(command, options.0, options.1));
+        let command = term.graphics_command.take().unwrap();
+        term.commit_graphics_command(process_parsed(
+            command,
+            term.config.graphics.storage_limit,
+            term.config.graphics.local_transmission,
+        ));
         parser.advance(&mut term, &input[consumed..]);
 
         let responses = responses.lock().unwrap();
@@ -3996,7 +3974,10 @@ mod tests {
             .store(&image, crate::graphics::PixelBuffer::from_rgba(1, 1, Arc::from([1, 2, 3, 4])))
             .unwrap();
         term.graphics
-            .place(&GraphicsCommand { placement_id: Some(1), ..image.clone() }, Point::default())
+            .place_for_test(
+                &GraphicsCommand { placement_id: Some(1), ..image.clone() },
+                Point::default(),
+            )
             .unwrap();
 
         term.commit_graphics_command(ProcessedCommand::Metadata(GraphicsCommand {
@@ -4018,7 +3999,7 @@ mod tests {
         }));
         for placement_id in 2..=9 {
             term.graphics
-                .place(
+                .place_for_test(
                     &GraphicsCommand {
                         image_id: Some(1),
                         placement_id: Some(placement_id),
@@ -4064,13 +4045,13 @@ mod tests {
 
         term.swap_alt();
         term.graphics.store(&command, pixels()).unwrap();
-        term.graphics.place(&command, Point::default()).unwrap();
+        term.graphics.place_for_test(&command, Point::default()).unwrap();
         term.swap_alt();
         term.swap_alt();
         assert!(term.graphics.placements().next().is_none());
 
         term.graphics.store(&command, pixels()).unwrap();
-        term.graphics.place(&command, Point::default()).unwrap();
+        term.graphics.place_for_test(&command, Point::default()).unwrap();
         term.clear_screen(ansi::ClearMode::All);
         assert!(term.graphics.placements().next().is_none());
     }
@@ -4083,7 +4064,7 @@ mod tests {
         term.graphics
             .store(&command, crate::graphics::PixelBuffer::from_rgba(1, 1, Arc::from([1, 2, 3, 4])))
             .unwrap();
-        term.graphics.place(&command, Point::default()).unwrap();
+        term.graphics.place_for_test(&command, Point::default()).unwrap();
 
         term.clear_line(ansi::LineClearMode::All);
         term.erase_chars(1);
@@ -4105,7 +4086,8 @@ mod tests {
         let size = TermSize::new(5, 3);
         let mut term = Term::new(Config::default(), &size, VoidListener);
         let command = GraphicsCommand { image_id: Some(1), ..Default::default() };
-        term.begin_graphics_processing(&graphics_request(command.clone()));
+        term.graphics_processing = true;
+        term.cancel_graphics_processing = false;
         term.set_options(Config {
             graphics: GraphicsConfig { local_transmission: false, ..Default::default() },
             ..Default::default()
@@ -4158,7 +4140,8 @@ mod tests {
         }
         term.grid[Line(0)][Column(9)].flags.insert(Flags::WRAPLINE);
         term.deferred_graphics_anchor = Some(Point::new(Line(0), Column(6)));
-        term.begin_graphics_processing(&graphics_request(GraphicsCommand::default()));
+        term.graphics_processing = true;
+        term.cancel_graphics_processing = false;
 
         term.resize(TermSize::new(5, 3));
 
@@ -4178,7 +4161,7 @@ mod tests {
         let command = GraphicsCommand { image_id: Some(1), ..Default::default() };
         let pixels = crate::graphics::PixelBuffer::from_rgba(1, 1, Arc::from([1, 2, 3, 4]));
         term.graphics.store(&command, pixels).unwrap();
-        term.graphics.place(&command, Point::new(Line(0), Column(6))).unwrap();
+        term.graphics.place_for_test(&command, Point::new(Line(0), Column(6))).unwrap();
 
         term.resize(TermSize::new(5, 3));
 
@@ -4205,7 +4188,7 @@ mod tests {
         let command = GraphicsCommand { image_id: Some(1), ..Default::default() };
         let pixels = crate::graphics::PixelBuffer::from_rgba(1, 1, Arc::from([1, 2, 3, 4]));
         term.graphics.store(&command, pixels).unwrap();
-        term.graphics.place(&command, Point::new(Line(0), Column(0))).unwrap();
+        term.graphics.place_for_test(&command, Point::new(Line(0), Column(0))).unwrap();
 
         term.scroll_up_relative(Line(0), 1);
 
@@ -4220,7 +4203,7 @@ mod tests {
         let command = GraphicsCommand { image_id: Some(1), ..Default::default() };
         let pixels = crate::graphics::PixelBuffer::from_rgba(1, 1, Arc::from([1, 2, 3, 4]));
         term.graphics.store(&command, pixels).unwrap();
-        term.graphics.place(&command, Point::new(Line(0), Column(0))).unwrap();
+        term.graphics.place_for_test(&command, Point::new(Line(0), Column(0))).unwrap();
         term.scroll_up_relative(Line(0), 1);
         let mut parser = ansi::Processor::<ansi::StdSyncHandler>::new();
 
@@ -4269,10 +4252,8 @@ mod tests {
         ] {
             let _consumed = parser.advance_until_terminated(&mut term, input);
             let request = term.take_graphics_request().unwrap();
-            let options = term.graphics_processing_options_for(&request);
-            term.commit_graphics_command(crate::graphics::process_request(
-                request, options.0, options.1,
-            ));
+            let processed = process_request_for_test(&term, request);
+            term.commit_graphics_command(processed);
         }
 
         assert_eq!(responses.lock().unwrap().as_slice(), [
@@ -4333,10 +4314,8 @@ mod tests {
         assert!(term.take_graphics_request().is_none());
         let second = parser.advance_until_terminated(&mut term, &input[first..]);
         let request = term.take_graphics_request().unwrap();
-        let options = term.graphics_processing_options();
-        term.commit_graphics_command(crate::graphics::process_request(
-            request, options.0, options.1,
-        ));
+        let processed = process_request_for_test(&term, request);
+        term.commit_graphics_command(processed);
 
         assert_eq!(first + second, input.len() - 1);
         let image = term.graphics().image_by_id(std::num::NonZeroU32::new(9).unwrap()).unwrap();
@@ -4357,10 +4336,8 @@ mod tests {
         parser.advance(&mut term, b"\x1b_Gm=0;BA==\x1b\\");
         let request = term.take_graphics_request().unwrap();
         assert_eq!(term.deferred_graphics_anchor, Some(Point::new(Line(4), Column(5))));
-        let options = term.graphics_processing_options_for(&request);
-        term.commit_graphics_command(crate::graphics::process_request(
-            request, options.0, options.1,
-        ));
+        let processed = process_request_for_test(&term, request);
+        term.commit_graphics_command(processed);
         assert_eq!(
             term.graphics.placements().next().unwrap().anchor(),
             Point::new(Line(4), Column(5))
@@ -4372,20 +4349,16 @@ mod tests {
         assert!(matches!(term.take_graphics_request(), Some(GraphicsRequest::Command { .. })));
         parser.advance(&mut term, b"\x1b_Gi=2,f=32,s=1,v=1,q=2;AQIDBA==\x1b\\");
         let request = term.take_graphics_request().unwrap();
-        let options = term.graphics_processing_options_for(&request);
-        term.commit_graphics_command(crate::graphics::process_request(
-            request, options.0, options.1,
-        ));
+        let processed = process_request_for_test(&term, request);
+        term.commit_graphics_command(processed);
         assert!(term.graphics.image_by_id(NonZeroU32::new(2).unwrap()).is_some());
 
         parser.advance(&mut term, b"\x1b_Gi=41,p=7,f=32,s=1,v=1,m=1;AQID\x1b\\");
         assert!(term.take_graphics_request().is_none());
         parser.advance(&mut term, b"\x1b_Gm=0;\x1b\\");
         let request = term.take_graphics_request().unwrap();
-        let options = term.graphics_processing_options_for(&request);
-        term.commit_graphics_command(crate::graphics::process_request(
-            request, options.0, options.1,
-        ));
+        let processed = process_request_for_test(&term, request);
+        term.commit_graphics_command(processed);
         assert_eq!(responses.lock().unwrap().as_slice(), ["\x1b_Gi=41,p=7;ENODATA\x1b\\"]);
     }
 
@@ -4398,7 +4371,7 @@ mod tests {
         let input = b"\x1b_Gi=42;AAAA\x1b\\after";
 
         let consumed = parser.advance_until_terminated(&mut term, input);
-        let command = term.take_graphics_command().unwrap().unwrap();
+        let command = term.graphics_command.take().unwrap().unwrap();
 
         assert_eq!(command.command.image_id, Some(42));
         assert_eq!(command.payload, b"AAAA");

@@ -9,7 +9,7 @@ pub const MAX_PLACEMENTS_PER_BUFFER: usize = 65_536;
 pub const MAX_RELATIVE_PLACEMENT_DEPTH: usize = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct PlacementHandle(pub(crate) u64);
+pub(crate) struct PlacementHandle(pub(crate) u64);
 
 #[derive(Debug)]
 pub(crate) struct PlacementInsert {
@@ -45,7 +45,7 @@ pub(crate) struct RelativePlacement {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Placement {
+pub(crate) struct Placement {
     pub(crate) handle: PlacementHandle,
     pub(crate) image: ImageHandle,
     pub(crate) image_id: Option<NonZeroU32>,
@@ -96,24 +96,9 @@ pub struct RenderableGraphic {
 }
 
 impl Placement {
-    pub fn handle(&self) -> PlacementHandle {
-        self.handle
-    }
-
-    pub fn image(&self) -> ImageHandle {
-        self.image
-    }
-
+    #[cfg(test)]
     pub fn anchor(&self) -> Point {
         self.anchor
-    }
-
-    pub fn z_index(&self) -> i32 {
-        self.z_index
-    }
-
-    pub fn is_virtual(&self) -> bool {
-        self.virtual_placement
     }
 }
 

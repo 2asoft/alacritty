@@ -18,16 +18,21 @@ pub(crate) use deferred::{
 };
 pub use image::PixelBuffer;
 pub(crate) use image::process_command;
-pub(crate) use parser::ParsedCommand;
-pub use parser::{
-    Action, Command, Compression, DeleteTarget, Format, GraphicsApcParser, GraphicsError,
+#[cfg(test)]
+pub(crate) use parser::DeleteTarget;
+pub(crate) use parser::{
+    Action, Command, Compression, Format, GraphicsApcParser, GraphicsError, ParsedCommand,
     Transmission,
 };
-pub use placeholder::{PLACEHOLDER, PlaceholderCell, decode_placeholder};
-pub use placement::{Placement, PlacementHandle, RenderableGraphic};
-pub(crate) use placement::{PlacementInsert, PlacementSpec, Placements};
-pub(crate) use storage::{FrameCommit, FrameWork, PreparedFrameMutation};
-pub use storage::{GraphicsState, Image, ImageHandle, StoreOutcome};
+#[cfg(test)]
+pub(crate) use placeholder::PLACEHOLDER;
+pub(crate) use placeholder::decode_placeholder;
+pub use placement::RenderableGraphic;
+pub(crate) use placement::{
+    Placement, PlacementHandle, PlacementInsert, PlacementSpec, Placements,
+};
+pub use storage::ImageHandle;
+pub(crate) use storage::{FrameCommit, FrameWork, GraphicsState, PreparedFrameMutation};
 pub(crate) use transaction::{
     EncodedPayload, EncodedReader, GraphicsRequest, PendingResult, PendingTransmission,
     process_request,

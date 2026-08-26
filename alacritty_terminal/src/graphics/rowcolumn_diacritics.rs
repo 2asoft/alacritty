@@ -299,9 +299,19 @@ pub const ROW_COLUMN_DIACRITICS: [char; 297] = [
     '\u{1d244}',
 ];
 
-pub fn diacritic_index(value: char) -> Option<u16> {
-    ROW_COLUMN_DIACRITICS
-        .iter()
-        .position(|candidate| *candidate == value)
-        .and_then(|index| u16::try_from(index).ok())
+pub(crate) fn diacritic_index(value: char) -> Option<u16> {
+    ROW_COLUMN_DIACRITICS.binary_search(&value).ok().and_then(|index| u16::try_from(index).ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn table_is_sorted_and_round_trips_every_index() {
+        assert!(ROW_COLUMN_DIACRITICS.windows(2).all(|pair| pair[0] < pair[1]));
+        for (index, value) in ROW_COLUMN_DIACRITICS.iter().copied().enumerate() {
+            assert_eq!(diacritic_index(value), u16::try_from(index).ok());
+        }
+    }
 }

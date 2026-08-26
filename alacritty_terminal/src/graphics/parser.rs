@@ -5,7 +5,7 @@ pub const MAX_GRAPHICS_CONTROL_BYTES: usize = 4096;
 pub const MAX_GRAPHICS_PAYLOAD_BYTES: usize = 128 * 1024;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Action {
+pub(crate) enum Action {
     Animate,
     ComposeFrame,
     Delete,
@@ -18,7 +18,7 @@ pub enum Action {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Format {
+pub(crate) enum Format {
     Rgb,
     #[default]
     Rgba,
@@ -27,7 +27,7 @@ pub enum Format {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Transmission {
+pub(crate) enum Transmission {
     #[default]
     Direct,
     File,
@@ -36,15 +36,15 @@ pub enum Transmission {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Compression {
+pub(crate) enum Compression {
     Zlib,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct DeleteTarget(pub u8);
+pub(crate) struct DeleteTarget(pub u8);
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Command {
+pub(crate) struct Command {
     pub action: Option<Action>,
     pub quiet: Option<u8>,
     pub format: Option<Format>,
@@ -84,7 +84,7 @@ pub(crate) struct ParsedCommand {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum GraphicsError {
+pub(crate) enum GraphicsError {
     InvalidControl,
     ControlTooLarge,
     PayloadTooLarge,
@@ -104,7 +104,7 @@ pub enum GraphicsError {
 }
 
 impl GraphicsError {
-    pub fn protocol_code(self) -> &'static str {
+    pub(crate) fn protocol_code(self) -> &'static str {
         match self {
             Self::InvalidControl | Self::Invalid => "EINVAL",
             Self::ControlTooLarge | Self::PayloadTooLarge | Self::TooLarge => "E2BIG",
@@ -122,7 +122,7 @@ impl GraphicsError {
         }
     }
 
-    pub fn protocol_message(self) -> &'static str {
+    pub(crate) fn protocol_message(self) -> &'static str {
         match self {
             Self::NotFound => "ENOENT:image not found",
             _ => self.protocol_code(),
@@ -141,20 +141,20 @@ enum State {
 }
 
 #[derive(Debug, Default)]
-pub struct GraphicsApcParser {
+pub(crate) struct GraphicsApcParser {
     state: State,
     control: Vec<u8>,
     payload: Vec<u8>,
 }
 
 impl GraphicsApcParser {
-    pub fn start(&mut self) {
+    pub(crate) fn start(&mut self) {
         self.state = State::Prefix;
         self.control.clear();
         self.payload.clear();
     }
 
-    pub fn put(&mut self, byte: u8) {
+    pub(crate) fn put(&mut self, byte: u8) {
         match self.state {
             State::Prefix => {
                 self.state = if byte == b'G' { State::Control } else { State::Ignore };
@@ -255,7 +255,7 @@ fn parse_command(control: &[u8], payload: Vec<u8>) -> Result<ParsedCommand, Grap
 }
 
 impl GraphicsApcParser {
-    pub fn abort(&mut self) {
+    pub(crate) fn abort(&mut self) {
         self.start();
     }
 }

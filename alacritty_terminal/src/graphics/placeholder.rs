@@ -3,10 +3,10 @@ use crate::vte::ansi::Color;
 
 use super::rowcolumn_diacritics::diacritic_index;
 
-pub const PLACEHOLDER: char = '\u{10eeee}';
+pub(crate) const PLACEHOLDER: char = '\u{10eeee}';
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PlaceholderCell {
+pub(crate) struct PlaceholderCell {
     pub image_id: u32,
     pub placement_id: u32,
     pub row: u16,
@@ -15,7 +15,7 @@ pub struct PlaceholderCell {
     underline: Option<Color>,
 }
 
-pub fn decode_placeholder(
+pub(crate) fn decode_placeholder(
     cell: &Cell,
     previous: Option<PlaceholderCell>,
 ) -> Option<PlaceholderCell> {

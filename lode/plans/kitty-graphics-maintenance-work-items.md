@@ -143,6 +143,8 @@ Suggested commit: `perf(renderer): avoid unnecessary graphics cell passes`
 
 ### Work item 7: Narrow APIs and optimize static lookup
 
+Status: Complete.
+
 Depends on work items 3 through 6.
 
 1. Remove `Term::take_graphics_command`.
