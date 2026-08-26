@@ -26,6 +26,7 @@ pub use parser::{
 pub use placeholder::{PLACEHOLDER, PlaceholderCell, decode_placeholder};
 pub use placement::{Placement, PlacementHandle, RenderableGraphic};
 pub(crate) use placement::{PlacementInsert, PlacementSpec, Placements};
+pub(crate) use storage::{FrameCommit, FrameWork, PreparedFrameMutation};
 pub use storage::{GraphicsState, Image, ImageHandle, StoreOutcome};
 pub(crate) use transaction::{
     EncodedPayload, EncodedReader, GraphicsRequest, PendingResult, PendingTransmission,

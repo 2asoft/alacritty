@@ -85,6 +85,8 @@ Suggested commit: `refactor(graphics): centralize deferred command processing`
 
 ### Work item 4: Prepare animation pixels off-lock
 
+Status: Complete.
+
 Depends on work item 3.
 
 1. Add `frame_revision` and increment it at every structural mutation.

@@ -874,9 +874,74 @@ impl<T> Term<T> {
     where
         T: EventListener,
     {
-        let PreparedGraphics::Command(command) = prepared;
-        self.commit_graphics_command(command);
-        None
+        match prepared {
+            PreparedGraphics::Command(ProcessedCommand::Decoded { command, image })
+                if command.action == Some(GraphicsAction::TransmitFrame)
+                    && !self.cancel_graphics_processing =>
+            {
+                let identity = command.clone();
+                match self.graphics.prepare_store_frame(command, image) {
+                    Ok(work) => Some(DeferredGraphics::Compose(work)),
+                    Err(error) => {
+                        self.commit_graphics_command(ProcessedCommand::Error {
+                            command: Some(identity),
+                            error,
+                        });
+                        None
+                    },
+                }
+            },
+            PreparedGraphics::Command(ProcessedCommand::Metadata(command))
+                if command.action == Some(GraphicsAction::ComposeFrame)
+                    && !self.cancel_graphics_processing =>
+            {
+                let identity = command.clone();
+                match self.graphics.prepare_compose_frames(command) {
+                    Ok(work) => Some(DeferredGraphics::Compose(work)),
+                    Err(error) => {
+                        self.commit_graphics_command(ProcessedCommand::Error {
+                            command: Some(identity),
+                            error,
+                        });
+                        None
+                    },
+                }
+            },
+            PreparedGraphics::Frame(prepared) => {
+                if std::mem::take(&mut self.cancel_graphics_processing) {
+                    self.graphics_processing = false;
+                    self.deferred_graphics_anchor = None;
+                    return None;
+                }
+                let command = prepared.command.clone();
+                let result = self.graphics.commit_frame(prepared);
+                self.graphics_processing = false;
+                self.deferred_graphics_anchor = None;
+                match result {
+                    Ok(crate::graphics::FrameCommit::Stored { frame_number }) => {
+                        let mut response = command;
+                        response.rows = Some(frame_number);
+                        self.graphics_response(
+                            &response,
+                            Ok(std::num::NonZeroU32::new(response.image_id.unwrap_or(0))),
+                        );
+                    },
+                    Ok(crate::graphics::FrameCommit::Composed) => {
+                        self.graphics_response(
+                            &command,
+                            Ok(std::num::NonZeroU32::new(command.image_id.unwrap_or(0))),
+                        );
+                    },
+                    Err(error) => self.graphics_response(&command, Err(error)),
+                }
+                self.mark_fully_damaged();
+                None
+            },
+            PreparedGraphics::Command(command) => {
+                self.commit_graphics_command(command);
+                None
+            },
+        }
     }
 
     #[cfg(feature = "fuzzing")]
@@ -903,15 +968,6 @@ impl<T> Term<T> {
         }
         let anchor = self.deferred_graphics_anchor.take();
         match processed {
-            ProcessedCommand::Decoded { mut command, image }
-                if command.action == Some(GraphicsAction::TransmitFrame) =>
-            {
-                let result = self.graphics.store_frame(&command, image).map(|frame| {
-                    command.rows = Some(frame);
-                    std::num::NonZeroU32::new(command.image_id.unwrap_or(0))
-                });
-                self.graphics_response(&command, result);
-            },
             ProcessedCommand::Decoded { command, image } => {
                 let result = if command.action == Some(GraphicsAction::TransmitAndPlace) {
                     let anchor = anchor.unwrap_or(self.grid.cursor.point);
@@ -957,12 +1013,6 @@ impl<T> Term<T> {
                     if let Err(error) = self.graphics.control_animation(&command) {
                         self.graphics_response(&command, Err(error));
                     }
-                } else if command.action == Some(GraphicsAction::ComposeFrame) {
-                    let result = self
-                        .graphics
-                        .compose_frames(&command)
-                        .map(|_| std::num::NonZeroU32::new(command.image_id.unwrap_or(0)));
-                    self.graphics_response(&command, result);
                 } else if command.more != Some(true) {
                     self.graphics_response(&command, Err(GraphicsError::Unsupported));
                 }
@@ -3025,6 +3075,13 @@ mod tests {
     #[derive(Clone, Default)]
     struct GeometryListener(Arc<Mutex<Vec<String>>>);
 
+    fn commit_processed<T: EventListener>(term: &mut Term<T>, command: ProcessedCommand) {
+        let mut prepared = Some(PreparedGraphics::Command(command));
+        while let Some(current) = prepared {
+            prepared = term.commit_deferred_graphics(current).map(DeferredGraphics::process);
+        }
+    }
+
     fn process_deferred<T: EventListener>(term: &mut Term<T>) {
         let mut work = term.take_deferred_graphics();
         while let Some(current) = work {
@@ -3171,8 +3228,15 @@ mod tests {
         };
 
         let start = Instant::now();
-        terminal.lock_unfair().commit_graphics_command(processed);
-        let elapsed = start.elapsed().as_nanos();
+        let work = terminal
+            .lock_unfair()
+            .commit_deferred_graphics(PreparedGraphics::Command(processed))
+            .unwrap();
+        let mut elapsed = start.elapsed().as_nanos();
+        let prepared = work.process();
+        let start = Instant::now();
+        terminal.lock_unfair().commit_deferred_graphics(prepared);
+        elapsed += start.elapsed().as_nanos();
         assert_eq!(black_box(terminal.lock_unfair().graphics.used_bytes()), bytes * 2);
         println!("KGP_MEASUREMENT elapsed_ns={elapsed}");
     }
@@ -3200,8 +3264,15 @@ mod tests {
         });
 
         let start = Instant::now();
-        terminal.lock_unfair().commit_graphics_command(processed);
-        let elapsed = start.elapsed().as_nanos();
+        let work = terminal
+            .lock_unfair()
+            .commit_deferred_graphics(PreparedGraphics::Command(processed))
+            .unwrap();
+        let mut elapsed = start.elapsed().as_nanos();
+        let prepared = work.process();
+        let start = Instant::now();
+        terminal.lock_unfair().commit_deferred_graphics(prepared);
+        elapsed += start.elapsed().as_nanos();
         assert_eq!(black_box(terminal.lock_unfair().graphics.used_bytes()), bytes * 2);
         println!("KGP_MEASUREMENT elapsed_ns={elapsed}");
     }
@@ -3515,6 +3586,20 @@ mod tests {
     }
 
     #[test]
+    fn frame_decode_error_precedes_missing_target() {
+        let size = TermSize::new(5, 10);
+        let listener = RecordingListener::default();
+        let responses = listener.0.clone();
+        let mut term = Term::new(Config::default(), &size, listener);
+        let mut parser = ansi::Processor::<ansi::StdSyncHandler>::new();
+
+        parser.advance(&mut term, b"\x1b_Ga=f,i=999,f=32,s=1,v=1;%%%\x1b\\");
+        process_deferred(&mut term);
+
+        assert_eq!(responses.lock().unwrap().as_slice(), ["\x1b_Gi=999;EBADPNG\x1b\\"]);
+    }
+
+    #[test]
     fn kitty_frame_response_includes_created_frame_number() {
         let size = TermSize::new(5, 10);
         let config = Config { graphics: GraphicsConfig::default(), ..Default::default() };
@@ -3528,7 +3613,7 @@ mod tests {
             )
             .unwrap();
 
-        term.commit_graphics_command(ProcessedCommand::Decoded {
+        commit_processed(&mut term, ProcessedCommand::Decoded {
             command: GraphicsCommand {
                 action: Some(GraphicsAction::TransmitFrame),
                 image_id: Some(1),
@@ -3544,11 +3629,7 @@ mod tests {
         parser.advance(&mut term, b"\x1b_Ga=f,i=1,f=32,s=1,v=1,m=1;BQYH\x1b\\");
         assert!(term.take_graphics_request().is_none());
         parser.advance(&mut term, b"\x1b_Gm=0;CA==\x1b\\");
-        let request = term.take_graphics_request().unwrap();
-        let options = term.graphics_processing_options_for(&request);
-        term.commit_graphics_command(crate::graphics::process_request(
-            request, options.0, options.1,
-        ));
+        process_deferred(&mut term);
         assert_eq!(responses.lock().unwrap().as_slice(), ["\x1b_Gi=1,r=3;OK\x1b\\"]);
     }
 
@@ -3873,6 +3954,37 @@ mod tests {
         });
 
         assert!(term.graphics.images().next().is_none());
+    }
+
+    #[test]
+    fn disabling_local_transmission_cancels_frame_continuation() {
+        let size = TermSize::new(5, 3);
+        let listener = RecordingListener::default();
+        let responses = listener.0.clone();
+        let mut term = Term::new(Config::default(), &size, listener);
+        let image = GraphicsCommand { image_id: Some(1), ..Default::default() };
+        term.graphics
+            .store(&image, crate::graphics::PixelBuffer::from_rgba(1, 1, Arc::from([1, 2, 3, 4])))
+            .unwrap();
+        term.graphics_processing = true;
+        let work = term
+            .commit_deferred_graphics(PreparedGraphics::Command(ProcessedCommand::Decoded {
+                command: GraphicsCommand {
+                    action: Some(GraphicsAction::TransmitFrame),
+                    image_id: Some(1),
+                    ..Default::default()
+                },
+                image: crate::graphics::PixelBuffer::from_rgba(1, 1, Arc::from([5, 6, 7, 8])),
+            }))
+            .unwrap();
+        term.set_options(Config {
+            graphics: GraphicsConfig { local_transmission: false, ..Default::default() },
+            ..Default::default()
+        });
+        term.commit_deferred_graphics(work.process());
+
+        assert_eq!(term.graphics.used_bytes(), 4);
+        assert!(responses.lock().unwrap().is_empty());
     }
 
     #[test]

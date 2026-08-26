@@ -42,6 +42,7 @@ pub struct Image {
     completed_loops: u32,
     next_frame_at: Option<Instant>,
     content_generation: u64,
+    frame_revision: u64,
     creation_serial: u64,
     last_used_serial: u64,
     transient: bool,
@@ -88,6 +89,67 @@ pub struct StoreOutcome {
     pub handle: ImageHandle,
     pub image_id: Option<NonZeroU32>,
     pub image_number: Option<u32>,
+}
+
+pub(crate) enum FrameCanvas {
+    Existing(PixelBuffer),
+    Blank { width: u32, height: u32, rgba: u32 },
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum FrameDestination {
+    Insert { gap_ms: i32 },
+    ReplaceRoot { gap_ms: i32 },
+    Replace { index: usize, gap_ms: i32 },
+    ComposeRoot,
+    Compose { index: usize },
+}
+
+pub(crate) struct FrameWork {
+    pub command: Command,
+    image: ImageHandle,
+    expected_revision: u64,
+    canvas: FrameCanvas,
+    source: PixelBuffer,
+    composition: FrameComposition,
+    destination: FrameDestination,
+}
+
+pub(crate) struct PreparedFrameMutation {
+    pub command: Command,
+    image: ImageHandle,
+    expected_revision: u64,
+    destination: FrameDestination,
+    pixels: PixelBuffer,
+}
+
+#[derive(Debug)]
+pub(crate) enum FrameCommit {
+    Stored { frame_number: u32 },
+    Composed,
+}
+
+impl FrameWork {
+    pub(crate) fn process(self) -> Result<PreparedFrameMutation, (Box<Command>, GraphicsError)> {
+        let destination = match self.canvas {
+            FrameCanvas::Existing(pixels) => pixels,
+            FrameCanvas::Blank { width, height, rgba } => match blank_frame(width, height, rgba) {
+                Ok(pixels) => pixels,
+                Err(error) => return Err((Box::new(self.command), error)),
+            },
+        };
+        let pixels = match compose(destination, &self.source, self.composition) {
+            Ok(pixels) => pixels,
+            Err(error) => return Err((Box::new(self.command), error)),
+        };
+        Ok(PreparedFrameMutation {
+            command: self.command,
+            image: self.image,
+            expected_revision: self.expected_revision,
+            destination: self.destination,
+            pixels,
+        })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -578,6 +640,7 @@ impl GraphicsState {
         let frame_count = image.frames.len() + 1;
         let frame = command.rows.unwrap_or(1).max(1) as usize;
         let index = frame.saturating_sub(1).min(frame_count - 1);
+        let revision = image.frame_revision.checked_add(1).ok_or(GraphicsError::TooLarge)?;
         let image = self.images.get_mut(&handle).ok_or(GraphicsError::NotFound)?;
         let removed_bytes = if index == 0 {
             let promoted = image.frames.remove(0);
@@ -601,92 +664,80 @@ impl GraphicsState {
         self.frame_count = self.frame_count.saturating_sub(1);
         self.serial = self.serial.checked_add(1).ok_or(GraphicsError::TooLarge)?;
         image.content_generation = self.serial;
+        image.frame_revision = revision;
         Ok(())
     }
 
-    pub fn store_frame(
-        &mut self,
-        command: &Command,
-        pixels: PixelBuffer,
-    ) -> Result<u32, GraphicsError> {
-        let handle = self.command_image_handle(command)?;
+    pub(crate) fn prepare_store_frame(
+        &self,
+        command: Command,
+        source: PixelBuffer,
+    ) -> Result<FrameWork, GraphicsError> {
+        let handle = self.command_image_handle(&command)?;
         let image = self.images.get(&handle).ok_or(GraphicsError::NotFound)?;
         let edit_index =
             command.rows.and_then(|frame| frame.checked_sub(1)).map(|frame| frame as usize);
         let base_index =
             command.columns.and_then(|frame| frame.checked_sub(1)).map(|frame| frame as usize);
-        let mut destination = match edit_index {
-            Some(index) => image.frame(index).cloned().ok_or(GraphicsError::NotFound)?,
+        let canvas = match edit_index {
+            Some(index) => {
+                FrameCanvas::Existing(image.frame(index).cloned().ok_or(GraphicsError::NotFound)?)
+            },
             None => match base_index {
-                Some(index) => image.frame(index).cloned().ok_or(GraphicsError::NotFound)?,
-                None => blank_frame(
-                    image.pixels.width(),
-                    image.pixels.height(),
-                    command.y_offset.unwrap_or(0),
-                )?,
+                Some(index) => FrameCanvas::Existing(
+                    image.frame(index).cloned().ok_or(GraphicsError::NotFound)?,
+                ),
+                None => FrameCanvas::Blank {
+                    width: image.pixels.width(),
+                    height: image.pixels.height(),
+                    rgba: command.y_offset.unwrap_or(0),
+                },
             },
         };
-        destination = compose(&destination, &pixels, FrameComposition {
-            source_x: 0,
-            source_y: 0,
-            destination_x: command.x.unwrap_or(0),
-            destination_y: command.y.unwrap_or(0),
-            width: pixels.width(),
-            height: pixels.height(),
-            overwrite: command.x_offset == Some(1),
-        })?;
-        let old_bytes =
-            edit_index.and_then(|index| image.frame(index)).map_or(0, PixelBuffer::storage_bytes);
-        let frame_number =
-            edit_index.map_or(image.frames.len() as u32 + 2, |index| index as u32 + 1);
-        let existing_gap = edit_index.map(|index| {
-            if index == 0 { image.root_gap_ms } else { image.frames[index - 1].gap_ms }
-        });
         if edit_index.is_none()
             && (image.frames.len() == MAX_FRAMES_PER_IMAGE
                 || self.frame_count == MAX_FRAMES_PER_BUFFER)
         {
             return Err(GraphicsError::NoSpace);
         }
-        let required = destination.storage_bytes();
-        self.evict_until_with_exclusion(required, old_bytes, Some(handle));
-        let target_usage = self
-            .used_bytes
-            .checked_sub(old_bytes)
-            .and_then(|used| used.checked_add(required))
-            .ok_or(GraphicsError::TooLarge)?;
-        if target_usage > self.storage_limit {
-            return Err(GraphicsError::NoSpace);
-        }
-
-        self.serial = self.serial.checked_add(1).ok_or(GraphicsError::TooLarge)?;
-        let image = self.images.get_mut(&handle).ok_or(GraphicsError::NotFound)?;
+        let existing_gap = edit_index.map(|index| {
+            if index == 0 { image.root_gap_ms } else { image.frames[index - 1].gap_ms }
+        });
         let gap_ms = command
             .z_index
             .filter(|gap| *gap != 0)
             .or(existing_gap)
             .unwrap_or(DEFAULT_FRAME_GAP_MS);
-        let frame = AnimationFrame { pixels: destination, gap_ms };
-        if let Some(index) = edit_index {
-            if index == 0 {
-                image.pixels = frame.pixels;
-                image.root_gap_ms = frame.gap_ms;
-            } else {
-                image.frames[index - 1] = frame;
-            }
-            if image.current_frame == index {
-                image.content_generation = self.serial;
-            }
-        } else {
-            image.frames.push(frame);
-            self.frame_count += 1;
-        }
-        self.used_bytes = target_usage;
-        Ok(frame_number)
+        let destination = match edit_index {
+            None => FrameDestination::Insert { gap_ms },
+            Some(0) => FrameDestination::ReplaceRoot { gap_ms },
+            Some(index) => FrameDestination::Replace { index, gap_ms },
+        };
+        let composition = FrameComposition {
+            source_x: 0,
+            source_y: 0,
+            destination_x: command.x.unwrap_or(0),
+            destination_y: command.y.unwrap_or(0),
+            width: source.width(),
+            height: source.height(),
+            overwrite: command.x_offset == Some(1),
+        };
+        Ok(FrameWork {
+            command,
+            image: handle,
+            expected_revision: image.frame_revision,
+            canvas,
+            source,
+            composition,
+            destination,
+        })
     }
 
-    pub fn compose_frames(&mut self, command: &Command) -> Result<(), GraphicsError> {
-        let handle = self.command_image_handle(command)?;
+    pub(crate) fn prepare_compose_frames(
+        &self,
+        command: Command,
+    ) -> Result<FrameWork, GraphicsError> {
+        let handle = self.command_image_handle(&command)?;
         let image = self.images.get(&handle).ok_or(GraphicsError::NotFound)?;
         let source_index =
             command.rows.and_then(|frame| frame.checked_sub(1)).ok_or(GraphicsError::Invalid)?
@@ -694,8 +745,8 @@ impl GraphicsState {
         let destination_index =
             command.columns.and_then(|frame| frame.checked_sub(1)).ok_or(GraphicsError::Invalid)?
                 as usize;
-        let source = image.frame(source_index).ok_or(GraphicsError::NotFound)?;
-        let destination = image.frame(destination_index).ok_or(GraphicsError::NotFound)?;
+        let source = image.frame(source_index).cloned().ok_or(GraphicsError::NotFound)?;
+        let destination = image.frame(destination_index).cloned().ok_or(GraphicsError::NotFound)?;
         let source_x = command.x_offset.unwrap_or(0);
         let source_y = command.y_offset.unwrap_or(0);
         let width = command.crop_width.filter(|width| *width != 0).unwrap_or(image.pixels.width());
@@ -711,18 +762,89 @@ impl GraphicsState {
         if overlaps {
             return Err(GraphicsError::Invalid);
         }
-        let composed = compose(destination, source, FrameComposition {
-            source_x,
-            source_y,
-            destination_x,
-            destination_y,
-            width,
-            height,
-            overwrite: command.cursor_policy == Some(1),
-        })?;
-        let old_bytes = destination.storage_bytes();
-        let required = composed.storage_bytes();
-        let target_usage = self
+        let overwrite = command.cursor_policy == Some(1);
+        let destination_kind = if destination_index == 0 {
+            FrameDestination::ComposeRoot
+        } else {
+            FrameDestination::Compose { index: destination_index }
+        };
+        Ok(FrameWork {
+            command,
+            image: handle,
+            expected_revision: image.frame_revision,
+            canvas: FrameCanvas::Existing(destination),
+            source,
+            composition: FrameComposition {
+                source_x,
+                source_y,
+                destination_x,
+                destination_y,
+                width,
+                height,
+                overwrite,
+            },
+            destination: destination_kind,
+        })
+    }
+
+    pub(crate) fn commit_frame(
+        &mut self,
+        prepared: PreparedFrameMutation,
+    ) -> Result<FrameCommit, GraphicsError> {
+        let mut next = self.clone();
+        let result = next.commit_frame_inner(prepared)?;
+        *self = next;
+        Ok(result)
+    }
+
+    fn commit_frame_inner(
+        &mut self,
+        prepared: PreparedFrameMutation,
+    ) -> Result<FrameCommit, GraphicsError> {
+        let image = self.images.get(&prepared.image).ok_or(GraphicsError::NotFound)?;
+        if image.frame_revision != prepared.expected_revision {
+            return Err(GraphicsError::Invalid);
+        }
+        let (old_bytes, visible_change) = match prepared.destination {
+            FrameDestination::Insert { .. } => {
+                if image.frames.len() == MAX_FRAMES_PER_IMAGE
+                    || self.frame_count == MAX_FRAMES_PER_BUFFER
+                {
+                    return Err(GraphicsError::NoSpace);
+                }
+                (0, false)
+            },
+            FrameDestination::ReplaceRoot { .. } | FrameDestination::ComposeRoot => {
+                (image.pixels.storage_bytes(), image.current_frame == 0)
+            },
+            FrameDestination::Replace { index, .. } | FrameDestination::Compose { index } => {
+                let frame = image.frames.get(index - 1).ok_or(GraphicsError::NotFound)?;
+                (frame.pixels.storage_bytes(), image.current_frame == index)
+            },
+        };
+        let required = prepared.pixels.storage_bytes();
+        let evictions = if matches!(
+            prepared.destination,
+            FrameDestination::Insert { .. }
+                | FrameDestination::ReplaceRoot { .. }
+                | FrameDestination::Replace { .. }
+        ) {
+            self.plan_evictions(required, old_bytes, Some(prepared.image))?
+        } else {
+            Vec::new()
+        };
+        let image = self.images.get(&prepared.image).ok_or(GraphicsError::NotFound)?;
+        if image.frame_revision != prepared.expected_revision {
+            return Err(GraphicsError::Invalid);
+        }
+        let mut projected = self.clone();
+        for handle in &evictions {
+            projected.remove(*handle);
+        }
+        if !projected.images.contains_key(&prepared.image) {
+            return Err(GraphicsError::NotFound);
+        }
+        let target_usage = projected
             .used_bytes
             .checked_sub(old_bytes)
             .and_then(|used| used.checked_add(required))
@@ -730,18 +852,74 @@ impl GraphicsState {
         if target_usage > self.storage_limit {
             return Err(GraphicsError::NoSpace);
         }
-        self.serial = self.serial.checked_add(1).ok_or(GraphicsError::TooLarge)?;
-        let image = self.images.get_mut(&handle).ok_or(GraphicsError::NotFound)?;
-        if destination_index == 0 {
-            image.pixels = composed;
-        } else {
-            image.frames[destination_index - 1].pixels = composed;
+        let serial = self.serial.checked_add(1).ok_or(GraphicsError::TooLarge)?;
+        let revision = image.frame_revision.checked_add(1).ok_or(GraphicsError::TooLarge)?;
+        let frame_number = match prepared.destination {
+            FrameDestination::Insert { .. } => u32::try_from(image.frames.len())
+                .ok()
+                .and_then(|count| count.checked_add(2))
+                .ok_or(GraphicsError::TooLarge)?,
+            FrameDestination::ReplaceRoot { .. } => 1,
+            FrameDestination::Replace { index, .. } => u32::try_from(index)
+                .ok()
+                .and_then(|index| index.checked_add(1))
+                .ok_or(GraphicsError::TooLarge)?,
+            FrameDestination::ComposeRoot | FrameDestination::Compose { .. } => 0,
+        };
+
+        for handle in evictions {
+            self.remove(handle);
         }
-        if image.current_frame == destination_index {
-            image.content_generation = self.serial;
+        let image = self.images.get_mut(&prepared.image).ok_or(GraphicsError::NotFound)?;
+        match prepared.destination {
+            FrameDestination::Insert { gap_ms } => {
+                image.frames.push(AnimationFrame { pixels: prepared.pixels, gap_ms });
+                self.frame_count += 1;
+            },
+            FrameDestination::ReplaceRoot { gap_ms } => {
+                image.pixels = prepared.pixels;
+                image.root_gap_ms = gap_ms;
+            },
+            FrameDestination::Replace { index, gap_ms } => {
+                image.frames[index - 1] = AnimationFrame { pixels: prepared.pixels, gap_ms };
+            },
+            FrameDestination::ComposeRoot => image.pixels = prepared.pixels,
+            FrameDestination::Compose { index } => image.frames[index - 1].pixels = prepared.pixels,
         }
+        image.frame_revision = revision;
+        if visible_change {
+            image.content_generation = serial;
+        }
+        self.serial = serial;
         self.used_bytes = target_usage;
-        Ok(())
+        Ok(if frame_number == 0 {
+            FrameCommit::Composed
+        } else {
+            FrameCommit::Stored { frame_number }
+        })
+    }
+
+    #[cfg(test)]
+    pub fn store_frame(
+        &mut self,
+        command: &Command,
+        pixels: PixelBuffer,
+    ) -> Result<u32, GraphicsError> {
+        let prepared = self
+            .prepare_store_frame(command.clone(), pixels)?
+            .process()
+            .map_err(|(_, error)| error)?;
+        match self.commit_frame(prepared)? {
+            FrameCommit::Stored { frame_number } => Ok(frame_number),
+            FrameCommit::Composed => Err(GraphicsError::Invalid),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn compose_frames(&mut self, command: &Command) -> Result<(), GraphicsError> {
+        let prepared =
+            self.prepare_compose_frames(command.clone())?.process().map_err(|(_, error)| error)?;
+        self.commit_frame(prepared).map(|_| ())
     }
 
     pub fn control_animation(&mut self, command: &Command) -> Result<(), GraphicsError> {
@@ -984,6 +1162,7 @@ impl GraphicsState {
             completed_loops: 0,
             next_frame_at: None,
             content_generation: self.serial,
+            frame_revision: 0,
             creation_serial: self.serial,
             last_used_serial: self.serial,
             transient: command.usage.is_some_and(|usage| usage & 1 != 0),
@@ -1009,6 +1188,47 @@ impl GraphicsState {
 
     fn evict_until(&mut self, incoming: usize) {
         self.evict_until_with_exclusion(incoming, 0, None);
+    }
+
+    fn plan_evictions(
+        &self,
+        incoming: usize,
+        credit: usize,
+        excluded: Option<ImageHandle>,
+    ) -> Result<Vec<ImageHandle>, GraphicsError> {
+        let mut simulation = self.clone();
+        let mut evictions = Vec::new();
+        while simulation.used_bytes.saturating_sub(credit).saturating_add(incoming)
+            > simulation.storage_limit
+        {
+            let candidate = simulation
+                .images
+                .values()
+                .filter(|image| Some(image.handle) != excluded)
+                .min_by_key(|image| {
+                    let placed = simulation.placements.image_is_placed(image.handle);
+                    let visible = placed
+                        && simulation
+                            .placements
+                            .image_is_visible(image.handle, &simulation.visible_lines);
+                    let priority = match (placed, visible, image.transient) {
+                        (false, _, true) => 0,
+                        (false, _, false) => 1,
+                        (true, false, true) => 2,
+                        (true, false, false) => 3,
+                        (true, true, _) => 4,
+                    };
+                    (priority, image.last_used_serial, image.creation_serial, image.handle.0)
+                })
+                .map(|image| image.handle)
+                .ok_or(GraphicsError::NoSpace)?;
+            evictions.push(candidate);
+            simulation.remove(candidate);
+            if excluded.is_some_and(|handle| !simulation.images.contains_key(&handle)) {
+                return Err(GraphicsError::NotFound);
+            }
+        }
+        Ok(evictions)
     }
 
     fn evict_until_with_exclusion(
@@ -1262,6 +1482,80 @@ mod tests {
             0, 255, 0, 255, 0, 0, 255, 255
         ]);
         assert_eq!(state.used_bytes(), 16);
+    }
+
+    #[test]
+    fn prepared_frame_commit_revalidates_revision_quota_and_eviction() {
+        let image = Command { image_id: Some(1), ..Default::default() };
+        let mut state = GraphicsState::new(12);
+        state.store(&image, pixels(1, 4)).unwrap();
+        state.store(&Command { image_id: Some(2), ..Default::default() }, pixels(2, 4)).unwrap();
+        let stale =
+            state.prepare_store_frame(image.clone(), pixels(3, 4)).unwrap().process().unwrap();
+        state.store_frame(&image, pixels(4, 4)).unwrap();
+        assert_eq!(state.commit_frame(stale).unwrap_err(), GraphicsError::Invalid);
+
+        let mut state = GraphicsState::new(8);
+        state.store(&image, pixels(1, 4)).unwrap();
+        state.store(&Command { image_id: Some(2), ..Default::default() }, pixels(2, 4)).unwrap();
+        let prepared =
+            state.prepare_store_frame(image.clone(), pixels(5, 4)).unwrap().process().unwrap();
+        state.commit_frame(prepared).unwrap();
+        assert!(state.image_by_id(NonZeroU32::new(2).unwrap()).is_none());
+        assert_eq!(state.image_by_id(NonZeroU32::new(1).unwrap()).unwrap().frames.len(), 1);
+
+        let prepared =
+            state.prepare_store_frame(image.clone(), pixels(6, 4)).unwrap().process().unwrap();
+        state.storage_limit = 4;
+        let before = state.clone();
+        assert_eq!(state.commit_frame(prepared).unwrap_err(), GraphicsError::NoSpace);
+        assert_eq!(state.used_bytes, before.used_bytes);
+        assert_eq!(state.images[&state.command_image_handle(&image).unwrap()].frames.len(), 1);
+    }
+
+    #[test]
+    fn compose_commit_never_evicts_and_generation_tracks_visible_pixels() {
+        let image = Command { image_id: Some(1), ..Default::default() };
+        let mut state = GraphicsState::new(12);
+        state.store(&image, pixels(1, 4)).unwrap();
+        let handle = state.command_image_handle(&image).unwrap();
+        let generation = state.images[&handle].content_generation;
+        state.store_frame(&image, pixels(2, 4)).unwrap();
+        assert_eq!(state.images[&handle].content_generation, generation);
+
+        state.store(&Command { image_id: Some(2), ..Default::default() }, pixels(3, 4)).unwrap();
+        let prepared = state
+            .prepare_compose_frames(Command {
+                action: Some(Action::ComposeFrame),
+                image_id: Some(1),
+                rows: Some(2),
+                columns: Some(1),
+                cursor_policy: Some(1),
+                ..Default::default()
+            })
+            .unwrap()
+            .process()
+            .unwrap();
+        state.storage_limit = 8;
+        assert_eq!(state.commit_frame(prepared).unwrap_err(), GraphicsError::NoSpace);
+        assert!(state.image_by_id(NonZeroU32::new(2).unwrap()).is_some());
+        assert_eq!(state.images[&handle].content_generation, generation);
+
+        state.storage_limit = 12;
+        let prepared = state
+            .prepare_compose_frames(Command {
+                action: Some(Action::ComposeFrame),
+                image_id: Some(1),
+                rows: Some(2),
+                columns: Some(1),
+                cursor_policy: Some(1),
+                ..Default::default()
+            })
+            .unwrap()
+            .process()
+            .unwrap();
+        state.commit_frame(prepared).unwrap();
+        assert!(state.images[&handle].content_generation > generation);
     }
 
     #[test]

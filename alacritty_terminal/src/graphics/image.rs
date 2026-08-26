@@ -23,15 +23,13 @@ const DIRECT_BASE64: GeneralPurpose = GeneralPurpose::new(
 pub struct PixelBuffer {
     width: u32,
     height: u32,
-    bytes: Arc<[u8]>,
+    // Share the owner without copying a complete pixel allocation into an Arc slice.
+    // Completed buffers have capacity equal to length and expose immutable bytes only.
+    bytes: Arc<Vec<u8>>,
 }
 
 impl PixelBuffer {
-    pub(crate) fn new_rgba(
-        width: u32,
-        height: u32,
-        bytes: Arc<[u8]>,
-    ) -> Result<Self, GraphicsError> {
+    pub(crate) fn new_rgba(width: u32, height: u32, bytes: Vec<u8>) -> Result<Self, GraphicsError> {
         let expected = usize::try_from(width)
             .ok()
             .and_then(|width| {
@@ -42,12 +40,17 @@ impl PixelBuffer {
         if bytes.len() != expected {
             return Err(GraphicsError::Invalid);
         }
+        let bytes = Arc::new(bytes.into_boxed_slice().into_vec());
         Ok(Self { width, height, bytes })
     }
 
     #[cfg(test)]
     pub(crate) fn from_rgba(width: u32, height: u32, bytes: Arc<[u8]>) -> Self {
-        Self { width, height, bytes }
+        Self { width, height, bytes: Arc::new(bytes.to_vec()) }
+    }
+
+    pub(crate) fn into_rgba(self) -> Vec<u8> {
+        Arc::try_unwrap(self.bytes).unwrap_or_else(|shared| shared.as_ref().clone())
     }
 
     pub fn width(&self) -> u32 {
@@ -231,7 +234,9 @@ fn decode_source(
             return Err(GraphicsError::NoSpace);
         }
         source = decompress_to_vec_zlib_with_limit(&source, decompressed_limit)
-            .map_err(|_| GraphicsError::Decode)?;
+            .map_err(|_| GraphicsError::Decode)?
+            .into_boxed_slice()
+            .into_vec();
         if source.len() != decompressed_limit {
             return Err(GraphicsError::Invalid);
         }
@@ -283,7 +288,7 @@ fn decode_rgb(
         bytes.extend_from_slice(pixel);
         bytes.push(255);
     }
-    Ok(PixelBuffer { width, height, bytes: bytes.into() })
+    PixelBuffer::new_rgba(width, height, bytes)
 }
 
 fn decode_rgba(
@@ -303,7 +308,7 @@ fn decode_rgba(
         return Err(GraphicsError::NoSpace);
     }
     source.truncate(canonical_size);
-    Ok(PixelBuffer { width, height, bytes: source.into() })
+    PixelBuffer::new_rgba(width, height, source)
 }
 
 fn decode_png(source: &[u8], storage_limit: usize) -> Result<PixelBuffer, GraphicsError> {
@@ -330,7 +335,11 @@ fn decode_png(source: &[u8], storage_limit: usize) -> Result<PixelBuffer, Graphi
     let info = reader.next_frame(&mut output).map_err(|_| GraphicsError::Decode)?;
     output.truncate(info.buffer_size());
 
-    let mut bytes = Vec::with_capacity(canonical_size);
+    let mut bytes = if info.color_type == ColorType::Rgba {
+        Vec::new()
+    } else {
+        Vec::with_capacity(canonical_size)
+    };
     match info.color_type {
         ColorType::Grayscale => {
             for gray in output {
@@ -355,12 +364,29 @@ fn decode_png(source: &[u8], storage_limit: usize) -> Result<PixelBuffer, Graphi
     if bytes.len() != canonical_size {
         return Err(GraphicsError::Decode);
     }
-    Ok(PixelBuffer { width, height, bytes: bytes.into() })
+    PixelBuffer::new_rgba(width, height, bytes)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn freezing_pixels_transfers_allocation_and_discards_spare_capacity() {
+        let bytes = vec![255; 4];
+        let pointer = bytes.as_ptr();
+        let pixels = PixelBuffer::new_rgba(1, 1, bytes).unwrap();
+        assert_eq!(pixels.bytes().as_ptr(), pointer);
+        assert_eq!(pixels.bytes.capacity(), pixels.storage_bytes());
+        let bytes = pixels.into_rgba();
+        assert_eq!(bytes.as_ptr(), pointer);
+
+        let mut spare = Vec::with_capacity(1024);
+        spare.extend_from_slice(&[1, 2, 3, 4]);
+        let pixels = PixelBuffer::new_rgba(1, 1, spare).unwrap();
+        assert_eq!(pixels.bytes.capacity(), 4);
+        assert_eq!(pixels.bytes(), &[1, 2, 3, 4]);
+    }
 
     #[derive(Clone)]
     struct TestCommand {

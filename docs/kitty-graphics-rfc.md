@@ -228,7 +228,7 @@ Default:
 
 This is intentionally comparable to the storage budget described by the Kitty protocol documentation.
 
-This budget counts canonical stored image/frame pixels. A deferred decode may use one additional working buffer bounded by the same limit so a new image can be validated before atomic commit evicts old data. Canonical storage remains within quota, and peak CPU pixel memory remains bounded by stored quota plus one decode working buffer. GPU texture memory is separately managed as a renderer cache.
+This budget counts canonical stored image/frame pixels per screen buffer. Decoding and frame composition use separately bounded source, decoder, and destination allocations. Empty chunks consume no block metadata; small chunks coalesce into 128 KiB blocks and stream through base64 without a second complete encoded body. The combined peak includes retained pixels and the allocations alive in the current processing stage. [Resource bounds](kitty-graphics-resources.md) define those stages, snapshot ownership, metadata, GPU accounting, and allocation checks.
 
 ### `local_transmission`
 

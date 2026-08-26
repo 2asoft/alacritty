@@ -1,4 +1,7 @@
-use super::{Command, GraphicsError, GraphicsRequest, PixelBuffer, process_request};
+use super::{
+    Command, FrameWork, GraphicsError, GraphicsRequest, PixelBuffer, PreparedFrameMutation,
+    process_request,
+};
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ProcessingOptions {
@@ -8,10 +11,12 @@ pub(crate) struct ProcessingOptions {
 
 pub(crate) enum DeferredGraphics {
     Decode(DecodeWork),
+    Compose(FrameWork),
 }
 
 pub(crate) enum PreparedGraphics {
     Command(ProcessedCommand),
+    Frame(PreparedFrameMutation),
 }
 
 pub(crate) struct DecodeWork {
@@ -38,6 +43,13 @@ impl DeferredGraphics {
                 work.options.decode_limit,
                 work.options.local_transmission,
             )),
+            Self::Compose(work) => match work.process() {
+                Ok(prepared) => PreparedGraphics::Frame(prepared),
+                Err((command, error)) => PreparedGraphics::Command(ProcessedCommand::Error {
+                    command: Some(*command),
+                    error,
+                }),
+            },
         }
     }
 }

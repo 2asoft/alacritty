@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use super::{GraphicsError, PixelBuffer};
 
 pub const DEFAULT_FRAME_GAP_MS: i32 = 40;
@@ -46,11 +44,11 @@ pub(crate) fn blank_frame(
     for _ in 0..pixels {
         data.extend_from_slice(&color);
     }
-    PixelBuffer::new_rgba(width, height, Arc::from(data))
+    PixelBuffer::new_rgba(width, height, data)
 }
 
 pub(crate) fn compose(
-    destination: &PixelBuffer,
+    destination: PixelBuffer,
     source: &PixelBuffer,
     composition: FrameComposition,
 ) -> Result<PixelBuffer, GraphicsError> {
@@ -83,7 +81,9 @@ pub(crate) fn compose(
         .ok()
         .and_then(|width| width.checked_mul(4))
         .ok_or(GraphicsError::TooLarge)?;
-    let mut output = destination.bytes().to_vec();
+    let (destination_width, destination_height) = (destination.width(), destination.height());
+    // A blank canvas owns its allocation uniquely; edits copy only shared retained pixels.
+    let mut output = destination.into_rgba();
     for row in 0..height {
         for column in 0..width {
             let source_offset = usize::try_from(source_y + row)
@@ -115,7 +115,7 @@ pub(crate) fn compose(
             }
         }
     }
-    PixelBuffer::new_rgba(destination.width(), destination.height(), Arc::from(output))
+    PixelBuffer::new_rgba(destination_width, destination_height, output)
 }
 
 fn alpha_blend(destination: &mut [u8], source: &[u8]) {
@@ -141,10 +141,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn composition_reuses_unique_canvas_and_preserves_shared_canvas() {
+        let source = blank_frame(1, 1, 0xff0000ff).unwrap();
+        let composition = FrameComposition {
+            source_x: 0,
+            source_y: 0,
+            destination_x: 0,
+            destination_y: 0,
+            width: 1,
+            height: 1,
+            overwrite: true,
+        };
+        let blank = blank_frame(2, 1, 0).unwrap();
+        let pointer = blank.bytes().as_ptr();
+        let composed = compose(blank, &source, composition).unwrap();
+        assert_eq!(composed.bytes().as_ptr(), pointer);
+        assert_eq!(composed.bytes(), &[255, 0, 0, 255, 0, 0, 0, 0]);
+
+        let retained = blank_frame(2, 1, 0).unwrap();
+        let edited = compose(retained.clone(), &source, composition).unwrap();
+        assert_ne!(edited.bytes().as_ptr(), retained.bytes().as_ptr());
+        assert_eq!(retained.bytes(), &[0; 8]);
+        assert_eq!(edited.bytes(), composed.bytes());
+    }
+
+    #[test]
     fn composes_overwrite_and_alpha_pixels() {
         let destination = blank_frame(1, 1, 0xff0000ff).unwrap();
         let source = blank_frame(1, 1, 0x0000ff80).unwrap();
-        let blended = compose(&destination, &source, FrameComposition {
+        let blended = compose(destination.clone(), &source, FrameComposition {
             source_x: 0,
             source_y: 0,
             destination_x: 0,
@@ -155,7 +180,7 @@ mod tests {
         })
         .unwrap();
         assert_eq!(blended.bytes(), &[127, 0, 128, 255]);
-        let overwritten = compose(&destination, &source, FrameComposition {
+        let overwritten = compose(destination, &source, FrameComposition {
             source_x: 0,
             source_y: 0,
             destination_x: 0,

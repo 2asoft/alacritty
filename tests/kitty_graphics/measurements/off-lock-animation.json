@@ -1,0 +1,203 @@
+{
+  "schema": 1,
+  "results": [
+    {
+      "case": "ordinary_text",
+      "samples": [
+        {
+          "run": 1,
+          "elapsed_ns": 183451932,
+          "peak_rss_kib": 20612
+        },
+        {
+          "run": 2,
+          "elapsed_ns": 185713422,
+          "peak_rss_kib": 20952
+        },
+        {
+          "run": 3,
+          "elapsed_ns": 193936609,
+          "peak_rss_kib": 21416
+        }
+      ],
+      "median_elapsed_ns": 185713422,
+      "median_peak_rss_kib": 20952
+    },
+    {
+      "case": "direct_rgba_64_mib",
+      "samples": [
+        {
+          "run": 1,
+          "elapsed_ns": 582886302,
+          "peak_rss_kib": 156188
+        },
+        {
+          "run": 2,
+          "elapsed_ns": 568322220,
+          "peak_rss_kib": 157396
+        },
+        {
+          "run": 3,
+          "elapsed_ns": 494212114,
+          "peak_rss_kib": 157772
+        }
+      ],
+      "median_elapsed_ns": 568322220,
+      "median_peak_rss_kib": 157396
+    },
+    {
+      "case": "direct_rgb_64_mib",
+      "samples": [
+        {
+          "run": 1,
+          "elapsed_ns": 633797610,
+          "peak_rss_kib": 244472
+        },
+        {
+          "run": 2,
+          "elapsed_ns": 624252607,
+          "peak_rss_kib": 243264
+        },
+        {
+          "run": 3,
+          "elapsed_ns": 657487345,
+          "peak_rss_kib": 243736
+        }
+      ],
+      "median_elapsed_ns": 633797610,
+      "median_peak_rss_kib": 243736
+    },
+    {
+      "case": "animation_insert_4096_square",
+      "samples": [
+        {
+          "run": 1,
+          "elapsed_ns": 8657,
+          "peak_rss_kib": 331552
+        },
+        {
+          "run": 2,
+          "elapsed_ns": 16171,
+          "peak_rss_kib": 331740
+        },
+        {
+          "run": 3,
+          "elapsed_ns": 16792,
+          "peak_rss_kib": 331732
+        }
+      ],
+      "median_elapsed_ns": 16171,
+      "median_peak_rss_kib": 331732
+    },
+    {
+      "case": "animation_compose_4096_square",
+      "samples": [
+        {
+          "run": 1,
+          "elapsed_ns": 251725,
+          "peak_rss_kib": 331980
+        },
+        {
+          "run": 2,
+          "elapsed_ns": 200809,
+          "peak_rss_kib": 332008
+        },
+        {
+          "run": 3,
+          "elapsed_ns": 242948,
+          "peak_rss_kib": 332048
+        }
+      ],
+      "median_elapsed_ns": 242948,
+      "median_peak_rss_kib": 332008
+    },
+    {
+      "case": "history_none_100000_lines",
+      "samples": [
+        {
+          "run": 1,
+          "elapsed_ns": 4449,
+          "peak_rss_kib": 10292
+        },
+        {
+          "run": 2,
+          "elapsed_ns": 361,
+          "peak_rss_kib": 10600
+        },
+        {
+          "run": 3,
+          "elapsed_ns": 3807,
+          "peak_rss_kib": 10372
+        }
+      ],
+      "median_elapsed_ns": 3807,
+      "median_peak_rss_kib": 10372
+    },
+    {
+      "case": "history_virtual_100000_lines",
+      "samples": [
+        {
+          "run": 1,
+          "elapsed_ns": 639247,
+          "peak_rss_kib": 10040
+        },
+        {
+          "run": 2,
+          "elapsed_ns": 776867,
+          "peak_rss_kib": 10192
+        },
+        {
+          "run": 3,
+          "elapsed_ns": 768121,
+          "peak_rss_kib": 9824
+        }
+      ],
+      "median_elapsed_ns": 768121,
+      "median_peak_rss_kib": 10040
+    },
+    {
+      "case": "history_relative_100000_lines",
+      "samples": [
+        {
+          "run": 1,
+          "elapsed_ns": 658874,
+          "peak_rss_kib": 10292
+        },
+        {
+          "run": 2,
+          "elapsed_ns": 818626,
+          "peak_rss_kib": 10088
+        },
+        {
+          "run": 3,
+          "elapsed_ns": 687268,
+          "peak_rss_kib": 9812
+        }
+      ],
+      "median_elapsed_ns": 687268,
+      "median_peak_rss_kib": 10088
+    },
+    {
+      "case": "virtual_placements_65536",
+      "samples": [
+        {
+          "run": 1,
+          "elapsed_ns": 372079245,
+          "peak_rss_kib": 35516
+        },
+        {
+          "run": 2,
+          "elapsed_ns": 380104731,
+          "peak_rss_kib": 35532
+        },
+        {
+          "run": 3,
+          "elapsed_ns": 378488778,
+          "peak_rss_kib": 35804
+        }
+      ],
+      "median_elapsed_ns": 378488778,
+      "median_peak_rss_kib": 35532
+    }
+  ]
+}
