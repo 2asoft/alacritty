@@ -16,9 +16,9 @@ use unicode_width::UnicodeWidthChar;
 
 use crate::event::{Event, EventListener};
 use crate::graphics::{
-    Action as GraphicsAction, Command as GraphicsCommand, EncodedPayload, GraphicsApcParser,
-    GraphicsError, GraphicsRequest, GraphicsState, ParsedCommand, PendingResult,
-    PendingTransmission, PlacementHandle, ProcessedCommand,
+    Action as GraphicsAction, Command as GraphicsCommand, DeferredGraphics, EncodedPayload,
+    GraphicsApcParser, GraphicsError, GraphicsRequest, GraphicsState, ParsedCommand, PendingResult,
+    PendingTransmission, PlacementHandle, PreparedGraphics, ProcessedCommand, ProcessingOptions,
 };
 use crate::grid::{Dimensions, Grid, GridIterator, Scroll};
 use crate::index::{self, Boundary, Column, Direction, Line, Point, Side};
@@ -768,10 +768,11 @@ impl<T> Term<T> {
     }
 
     /// Take or assemble the graphics request at the current ordered parser barrier.
-    pub fn take_graphics_request(&mut self) -> Option<GraphicsRequest> {
+    fn take_graphics_request(&mut self) -> Option<GraphicsRequest> {
         let parsed = match self.graphics_command.take()? {
             Ok(parsed) => parsed,
             Err(error) => {
+                self.pending_graphics_transmission = None;
                 self.deferred_graphics_anchor = None;
                 return Some(GraphicsRequest::Invalid { command: None, error });
             },
@@ -785,6 +786,7 @@ impl<T> Term<T> {
         {
             Some(limit) => limit,
             None => {
+                self.pending_graphics_transmission = None;
                 self.deferred_graphics_anchor = None;
                 return Some(GraphicsRequest::Invalid {
                     command: Some(parsed.command),
@@ -832,26 +834,64 @@ impl<T> Term<T> {
         Some(request)
     }
 
-    pub fn begin_graphics_processing(&mut self, _request: &GraphicsRequest) {
+    pub(crate) fn take_deferred_graphics(&mut self) -> Option<DeferredGraphics> {
+        let request = self.take_graphics_request()?;
+        let decode_limit =
+            request.command().map_or(self.config.graphics.storage_limit, |command| {
+                self.graphics.decode_limit(command)
+            });
+        self.graphics_processing = true;
+        self.cancel_graphics_processing = false;
+        Some(DeferredGraphics::decode(request, ProcessingOptions {
+            decode_limit,
+            local_transmission: self.config.graphics.local_transmission,
+        }))
+    }
+
+    #[cfg(test)]
+    fn begin_graphics_processing(&mut self, _request: &GraphicsRequest) {
         self.graphics_processing = true;
         self.cancel_graphics_processing = false;
     }
 
-    /// Options required to process a deferred graphics command outside the terminal lock.
-    pub fn graphics_processing_options(&self) -> (usize, bool) {
+    #[cfg(test)]
+    fn graphics_processing_options(&self) -> (usize, bool) {
         (self.config.graphics.storage_limit, self.config.graphics.local_transmission)
     }
 
-    pub fn graphics_processing_options_for(&self, request: &GraphicsRequest) -> (usize, bool) {
-        let storage_limit =
-            request.command().map_or(self.config.graphics.storage_limit, |command| {
-                self.graphics.decode_limit(command)
-            });
-        (storage_limit, self.config.graphics.local_transmission)
+    #[cfg(test)]
+    fn graphics_processing_options_for(&self, request: &GraphicsRequest) -> (usize, bool) {
+        let limit = request.command().map_or(self.config.graphics.storage_limit, |command| {
+            self.graphics.decode_limit(command)
+        });
+        (limit, self.config.graphics.local_transmission)
+    }
+
+    pub(crate) fn commit_deferred_graphics(
+        &mut self,
+        prepared: PreparedGraphics,
+    ) -> Option<DeferredGraphics>
+    where
+        T: EventListener,
+    {
+        let PreparedGraphics::Command(command) = prepared;
+        self.commit_graphics_command(command);
+        None
+    }
+
+    #[cfg(feature = "fuzzing")]
+    pub fn process_graphics_barrier_for_fuzzing(&mut self)
+    where
+        T: EventListener,
+    {
+        let mut work = self.take_deferred_graphics();
+        while let Some(current) = work {
+            work = self.commit_deferred_graphics(current.process());
+        }
     }
 
     /// Commit a graphics command processed outside the terminal lock.
-    pub fn commit_graphics_command(&mut self, processed: ProcessedCommand)
+    fn commit_graphics_command(&mut self, processed: ProcessedCommand)
     where
         T: EventListener,
     {
@@ -2985,6 +3025,13 @@ mod tests {
     #[derive(Clone, Default)]
     struct GeometryListener(Arc<Mutex<Vec<String>>>);
 
+    fn process_deferred<T: EventListener>(term: &mut Term<T>) {
+        let mut work = term.take_deferred_graphics();
+        while let Some(current) = work {
+            work = term.commit_deferred_graphics(current.process());
+        }
+    }
+
     fn graphics_request(command: GraphicsCommand) -> GraphicsRequest {
         GraphicsRequest::Command { command, payload: EncodedPayload::Single(Vec::new()) }
     }
@@ -3577,12 +3624,7 @@ mod tests {
         while !input.is_empty() || parser.has_pending_input() {
             let consumed = parser.advance_until_terminated(&mut term, input);
             input = &input[consumed..];
-            if let Some(request) = term.take_graphics_request() {
-                term.begin_graphics_processing(&request);
-                let options = term.graphics_processing_options_for(&request);
-                let command = crate::graphics::process_request(request, options.0, options.1);
-                term.commit_graphics_command(command);
-            }
+            process_deferred(&mut term);
         }
 
         let responses = responses.lock().unwrap();
@@ -3964,6 +4006,45 @@ mod tests {
             "\x1b_Gi=1;EIO\x1b\\",
             "\x1b_Gi=1;EIO\x1b\\",
         ]);
+    }
+
+    #[test]
+    fn parser_error_aborts_pending_graphics_transmission() {
+        let size = TermSize::new(5, 10);
+        let listener = RecordingListener::default();
+        let responses = listener.0.clone();
+        let mut term = Term::new(Config::default(), &size, listener);
+        let mut parser = ansi::Processor::<ansi::StdSyncHandler>::new();
+
+        parser.advance(&mut term, b"\x1b_Gi=7,f=32,s=1,v=1,m=1;AQID\x1b\\");
+        assert!(term.take_deferred_graphics().is_none());
+        parser.advance(&mut term, b"\x1b_Gi=invalid\x1b\\");
+        process_deferred(&mut term);
+        parser.advance(&mut term, b"\x1b_Gm=0;BA==\x1b\\");
+        process_deferred(&mut term);
+
+        assert!(term.graphics.image_by_id(NonZeroU32::new(7).unwrap()).is_none());
+        assert!(responses.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn deferred_pipeline_commits_before_retained_suffix() {
+        let size = TermSize::new(5, 10);
+        let listener = RecordingListener::default();
+        let responses = listener.0.clone();
+        let mut term = Term::new(Config::default(), &size, listener);
+        let mut parser = ansi::Processor::<ansi::StdSyncHandler>::new();
+        let input = b"\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[c";
+
+        let consumed = parser.advance_until_terminated(&mut term, input);
+        let work = term.take_deferred_graphics().unwrap();
+        assert!(term.graphics_processing);
+        term.commit_deferred_graphics(work.process());
+        parser.advance(&mut term, &input[consumed..]);
+
+        let responses = responses.lock().unwrap();
+        assert_eq!(responses[0], "\x1b_Gi=31;OK\x1b\\");
+        assert!(responses[1].starts_with("\x1b[?"));
     }
 
     #[test]

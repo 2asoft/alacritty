@@ -15,7 +15,7 @@ use log::error;
 use polling::{Event as PollingEvent, Events, PollMode, Poller};
 
 use crate::event::{self, Event, EventListener, WindowSize};
-use crate::graphics::process_request;
+use crate::graphics::DeferredGraphics;
 use crate::sync::FairMutex;
 use crate::term::Term;
 use crate::{thread, tty};
@@ -86,6 +86,16 @@ where
         EventLoopSender { sender: self.tx.clone(), poller: self.poll.clone() }
     }
 
+    fn process_deferred_graphics(&self, mut work: DeferredGraphics) {
+        loop {
+            let prepared = work.process();
+            match self.terminal.lock_unfair().commit_deferred_graphics(prepared) {
+                Some(continuation) => work = continuation,
+                None => break,
+            }
+        }
+    }
+
     /// Drain the channel.
     ///
     /// Returns `false` when a shutdown message was received.
@@ -116,7 +126,7 @@ where
         let mut processed = 0;
 
         // Reserve the next terminal lock for PTY reading.
-        let _terminal_lease = Some(self.terminal.lease());
+        let mut _terminal_lease = Some(self.terminal.lease());
         let mut terminal = None;
 
         loop {
@@ -158,24 +168,18 @@ where
             // Stop at graphics command barriers and retain the unconsumed suffix.
             let consumed =
                 state.parser.advance_until_terminated(&mut **terminal_guard, &buf[..unprocessed]);
-            let request = terminal_guard.take_graphics_request();
-            let graphics_options = match &request {
-                Some(request) => {
-                    terminal_guard.begin_graphics_processing(request);
-                    terminal_guard.graphics_processing_options_for(request)
-                },
-                None => terminal_guard.graphics_processing_options(),
-            };
+            let graphics = terminal_guard.take_deferred_graphics();
             processed += consumed;
             buf.copy_within(consumed..unprocessed, 0);
             unprocessed -= consumed;
             recorded = unprocessed;
 
-            if let Some(request) = request {
+            if let Some(graphics) = graphics {
                 // Heavy payload processing must not hold the terminal mutex.
                 terminal = None;
-                let command = process_request(request, graphics_options.0, graphics_options.1);
-                self.terminal.lock_unfair().commit_graphics_command(command);
+                _terminal_lease = None;
+                self.process_deferred_graphics(graphics);
+                _terminal_lease = Some(self.terminal.lease());
             }
 
             // Assure we're not blocking the terminal too long unnecessarily. Bytes already read
@@ -266,23 +270,13 @@ where
 
                 // Handle synchronized update timeout.
                 if events.is_empty() && self.rx.peek().is_none() {
-                    let (request, graphics_options) = {
+                    let graphics = {
                         let mut terminal = self.terminal.lock();
                         state.parser.stop_sync(&mut *terminal);
-                        let request = terminal.take_graphics_request();
-                        let graphics_options = match &request {
-                            Some(request) => {
-                                terminal.begin_graphics_processing(request);
-                                terminal.graphics_processing_options_for(request)
-                            },
-                            None => terminal.graphics_processing_options(),
-                        };
-                        (request, graphics_options)
+                        terminal.take_deferred_graphics()
                     };
-                    if let Some(request) = request {
-                        let command =
-                            process_request(request, graphics_options.0, graphics_options.1);
-                        self.terminal.lock_unfair().commit_graphics_command(command);
+                    if let Some(graphics) = graphics {
+                        self.process_deferred_graphics(graphics);
                     }
                     if state.parser.has_pending_input() {
                         if let Err(err) = self.pty_read(&mut state, &mut buf, pipe.as_mut()) {

@@ -1,7 +1,6 @@
 #![no_main]
 
 use alacritty_terminal::event::VoidListener;
-use alacritty_terminal::graphics::process_request;
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::{Config, GraphicsConfig, Term};
@@ -41,11 +40,7 @@ fuzz_target!(|data: &[u8]| {
     let mut remaining = data;
     while !remaining.is_empty() || parser.has_pending_input() {
         let consumed = parser.advance_until_terminated(&mut term, remaining);
-        if let Some(request) = term.take_graphics_request() {
-            term.begin_graphics_processing(&request);
-            let options = term.graphics_processing_options_for(&request);
-            term.commit_graphics_command(process_request(request, options.0, options.1));
-        }
+        term.process_graphics_barrier_for_fuzzing();
         remaining = &remaining[consumed..];
         if consumed == 0 && !parser.has_pending_input() {
             break;
@@ -54,11 +49,7 @@ fuzz_target!(|data: &[u8]| {
 
     parser.stop_sync(&mut term);
     loop {
-        if let Some(request) = term.take_graphics_request() {
-            term.begin_graphics_processing(&request);
-            let options = term.graphics_processing_options_for(&request);
-            term.commit_graphics_command(process_request(request, options.0, options.1));
-        }
+        term.process_graphics_barrier_for_fuzzing();
         if !parser.has_pending_input() {
             break;
         }

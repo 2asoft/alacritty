@@ -9,7 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-alacritty_terminal = { path = "../alacritty_terminal" }
+alacritty_terminal = { path = "../alacritty_terminal", features = ["fuzzing"] }
 
 [[bin]]
 name = "kitty_stream"

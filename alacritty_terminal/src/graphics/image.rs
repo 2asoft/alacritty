@@ -10,7 +10,7 @@ use png::{ColorType, Decoder, Limits, Transformations};
 
 use super::{
     Action, Command, Compression, EncodedPayload, EncodedReader, Format, GraphicsError,
-    Transmission, load_transport,
+    ProcessedCommand, Transmission, load_transport,
 };
 
 const MAX_PNG_DECODER_OVERHEAD: usize = 1024 * 1024;
@@ -65,13 +65,6 @@ impl PixelBuffer {
     pub fn storage_bytes(&self) -> usize {
         self.bytes.len()
     }
-}
-
-#[derive(Debug)]
-pub enum ProcessedCommand {
-    Decoded { command: Command, image: PixelBuffer },
-    Metadata(Command),
-    Error { command: Option<Command>, error: GraphicsError },
 }
 
 pub(crate) fn process_command(

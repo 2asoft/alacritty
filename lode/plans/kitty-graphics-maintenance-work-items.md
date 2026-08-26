@@ -65,6 +65,8 @@ Suggested commit: `perf(graphics): stream chunked payload decoding`
 
 ### Work item 3: Establish the deferred interface
 
+Status: Complete.
+
 Depends on work items 1 and 2.
 
 1. Add `graphics/deferred.rs` and the stabilized deferred types.

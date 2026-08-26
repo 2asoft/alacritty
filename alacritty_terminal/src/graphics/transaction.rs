@@ -6,7 +6,7 @@ use super::{Action, Command, GraphicsError, ParsedCommand, ProcessedCommand, pro
 const ENCODED_BLOCK_BYTES: usize = 128 * 1024;
 
 #[derive(Debug)]
-pub enum EncodedPayload {
+pub(crate) enum EncodedPayload {
     Single(Vec<u8>),
     Chunks(Vec<Vec<u8>>),
 }
@@ -62,7 +62,7 @@ impl Read for EncodedReader {
 }
 
 #[derive(Debug)]
-pub enum GraphicsRequest {
+pub(crate) enum GraphicsRequest {
     Invalid { command: Option<Command>, error: GraphicsError },
     Command { command: Command, payload: EncodedPayload },
 }
@@ -77,7 +77,7 @@ impl GraphicsRequest {
 }
 
 #[derive(Debug)]
-pub struct PendingTransmission {
+pub(crate) struct PendingTransmission {
     command: Command,
     chunks: Vec<Vec<u8>>,
     encoded_bytes: usize,
@@ -179,7 +179,7 @@ impl PendingTransmission {
 }
 
 #[derive(Debug)]
-pub enum PendingResult {
+pub(crate) enum PendingResult {
     Pending(PendingTransmission),
     Complete(GraphicsRequest),
 }
@@ -223,7 +223,7 @@ impl Command {
     }
 }
 
-pub fn process_request(
+pub(crate) fn process_request(
     request: GraphicsRequest,
     storage_limit: usize,
     local_transmission: bool,
