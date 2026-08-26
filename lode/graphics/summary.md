@@ -2,7 +2,7 @@
 
 ## Responsibility
 
-Kitty graphics support spans generic APC recognition, terminal protocol and image state, ordered heavy processing, grid-relative placement lifetime, render snapshots, and OpenGL compositing. The Kitty protocol defines wire behavior. The accepted private-fork policy is in the [RFC](../../docs/kitty-graphics-rfc.md), and phase state is in the [implementation plan](../plans/kitty-graphics.md).
+Kitty graphics support spans generic APC recognition, terminal protocol and image state, ordered heavy processing, grid-relative placement lifetime, render snapshots, and OpenGL compositing. The Kitty protocol defines wire behavior. The accepted private-fork policy is in the [RFC](../../docs/kitty-graphics-rfc.md), and durable implementation decisions are in the [implementation record](../plans/kitty-graphics.md).
 
 ## Ownership and flow
 

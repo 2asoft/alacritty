@@ -1,6 +1,6 @@
 # Project practices
 
-Follow repository formatting and test conventions. For Rust changes, run focused tests first, then `cargo +nightly fmt --all --check`, relevant workspace tests, and `cargo clippy --workspace --all-targets -- -D warnings` when practical. CI uses nightly formatting because repository settings require unstable rustfmt options.
+Follow repository formatting and test conventions. For Rust changes, run focused tests first, then `cargo +nightly fmt --all --check`, relevant workspace tests, and `cargo clippy --workspace --all-targets -- -D warnings` when practical. CI uses nightly formatting because repository settings require unstable rustfmt options. Enable `alacritty_terminal/fuzzing` when checking the graphics measurement examples.
 
 ## Feature branch history
 
@@ -17,4 +17,5 @@ Follow repository formatting and test conventions. For Rust changes, run focused
 - Keep state replacement transactional. A failed replacement must preserve the previous image and placements.
 - Keep image and metadata storage bounded independently.
 - Verify rendering with controlled framebuffer output and screenshots for user-visible milestones.
-- Update [graphics memory](graphics/summary.md) and the [active plan](plans/kitty-graphics.md) as verified phases complete.
+- Run `scripts/kitty-graphics-baseline.sh` for every feature-branch commit and include its replaced `tests/kitty_graphics/baseline/` bundle in that commit.
+- Update [graphics memory](graphics/summary.md) and affected [architecture records](plans/kitty-graphics-maintenance.md) when verified behavior or constraints change.

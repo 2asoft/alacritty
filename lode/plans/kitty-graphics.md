@@ -1,72 +1,40 @@
-# Kitty graphics implementation plan
+# Kitty graphics implementation
 
-Status: complete
+Status: Complete
 
-## Outcome and acceptance
+## Outcome
 
-Implement the complete Kitty terminal graphics protocol described by the accepted [RFC](../../docs/kitty-graphics-rfc.md). Completion requires every item in its definition of done, including ordered queries, all transports and image formats, classic and placeholder placements, animation, bounded resources, reflow-safe anchors, layered rendering, texture tiling, context recovery, and no material steady-state regression without graphics.
+This fork implements the complete Kitty terminal graphics protocol described by the accepted [RFC](../../docs/kitty-graphics-rfc.md) and tracked by the [conformance matrix](../../docs/kitty-graphics-conformance.md). Support is always available and uses capability queries rather than a changed terminal identity.
 
-## Verified current state
-
-- Base revision is `7dd7b5b0` on `aasoft/kitty`.
-- The workspace now carries a local `vte` 0.15.0 fork. APC has its own streaming callback state; PM and SOS remain ignored.
-- `alacritty_terminal` parses bounded Kitty APC data into payload-free typed commands. The PTY loop retains the suffix at a graphics barrier, accepts the published 4 KiB chunks plus Kitty 0.48.2's bounded 128 KiB and unpadded-base64 client behavior, streams chunk vectors through base64 without a concatenated encoded body, decodes RGB, RGBA, PNG, and zlib data outside `Term`'s mutex, commits in order, and preserves query-response ordering. Regular-file, constrained temporary-file, and POSIX shared-memory transfers run outside the terminal lock and enforce the local-transmission gate, opened-object type and filesystem checks, post-open sensitive-path checks, ranges, and storage bounds.
-- Per-screen image storage uses process-unique monotonic handles, external ID indexes, deterministic image-number lookup, atomic ID replacement, one quota-bounded deferred decode working buffer, a canonical stored-byte limit, and deterministic oldest-first eviction. New IDs can reach commit-time eviction even when canonical storage is full; peak CPU pixel memory remains bounded by stored quota plus one decode working buffer.
-- Basic classic transmit-and-place and place-existing commands create independent placements. Successful placements advance the cursor using explicit, aspect-inferred, or native-pixel cell spans unless suppressed; virtual and relative placements never move it. The OpenGL renderer caches textures and draws crop/scaled RGBA content in the protocol's three image z strata around cell backgrounds, glyphs/decorations, and the cursor. Classic anchors follow width reflow and full-screen scrolling. Partial-region scrolling moves only fully contained placements and retains page-area clipping while content exits the region. Anchors are removed when retained history prunes them. Deferred placement anchors also follow resize while heavy processing runs outside the terminal lock. The renderer tiles images to the hardware texture limit with overlap borders and uses a deterministic LRU texture cache bounded by the configured graphics storage limit; oversized working images stream through transient tiles. Image passes intersect the active damage scissor with terminal content bounds, including placements anchored partially outside the viewport. The framebuffer harness discards and reconstructs texture state and verifies bounded cache eviction. Classic deletion supports the complete lowercase/uppercase selector matrix and aborts incomplete chunk streams.
-- Virtual placements and explicit/inherited Unicode placeholder cells render from the complete authoritative generated diacritic table. Row and column indices cover the full table, high image-ID bytes remain byte-bounded, all inheritance conditions are tested, and location-based deletion and terminal scrolling preserve virtual placement prototypes.
-- Relative placements resolve classic and virtual parents, enforce an eight-link depth bound, reject missing parents and cycles atomically, follow parent movement, and cascade deletion and replacement lifetimes.
-- Animation frames load as quota-counted canonical RGBA canvases, support frame editing and alpha/overwrite composition, client-selected frames, stop/loading/run states, loop limits, visible and gapless frame gaps, frame deletion, and UI-scheduled playback deadlines. Stop resets loop progress, loading resumes when a frame arrives, animation transitions damage their placements, and runtime framebuffer tests cover automatic and client-selected playback.
-- Primary grid width changes reflow cells in `alacritty_terminal/src/grid/resize.rs`; transient, serde-skipped cell markers apply the same mapping to classic and deferred graphics anchors without adding per-cell steady-state storage.
-- `Term::graphics_render_snapshot` collects terminal renderable state under lock with one frame-local virtual-prototype index. Ordinary virtual placements scan only the viewport; only classic relative chains rooted at virtual placements scan retained history. OpenGL work occurs after lock release. Without placements, rendering skips cell scans and snapshot allocation. Separate background and glyph cell passes run only for the middle negative-z image stratum.
-- Multiplexer interoperability uses capability queries rather than terminal identity. tmux 3.7c renders classic placements through enabled DCS passthrough. Zellij 0.45.0 wraps a complete compatible stream in synchronized updates. The complete-spec re-audit found that synchronized replay bypassed deferred barriers; barrier-aware completion, timeout, and overflow replay now preserve command and response order, and an isolated Zellij framebuffer test renders the relayed image.
+The implementation covers ordered queries, direct and local transports, RGB, RGBA, PNG, zlib, classic and placeholder placements, relative placement graphs, animation, bounded CPU and GPU resources, reflow-safe anchors, layered rendering, texture tiling, and context recovery. Non-Unix shared-memory transmission returns `ENOTSUP`; this fork makes no Windows KGP shared-memory conformance claim.
 
 ## Accepted decisions
 
 - The official Kitty protocol is authoritative for wire behavior. The RFC defines private-fork policy where the protocol does not.
-- Canonical RGBA8 CPU data belongs to per-screen terminal graphics state. GPU textures are disposable caches.
+- Canonical straight-alpha RGBA8 data belongs to per-screen terminal graphics state. GPU textures are disposable caches.
 - Generic APC recognition streams data without whole-string buffering.
-- Heavy transport and decode work forms an ordered parser barrier and runs outside `Term`'s mutex.
-- Classic placements are independent terminal objects with reflow-aware anchors. Placeholder instances remain ordinary cells.
+- Heavy transport, decode, allocation, and composition work forms an ordered parser barrier and runs outside `Term`'s mutex.
+- Classic placements are independent terminal objects with reflow-aware anchors. Placeholder instances remain ordinary cells backed by immutable virtual placement prototypes.
 - Local transports default on but have a configuration kill switch.
-- Kitty graphics support is always available. After manual acceptance and external conformance hardening, the operator chose to remove the temporary protocol-disable option rather than retain a feature switch.
+- Graphics support has no protocol-disable option. Resource policy remains configurable.
+- Primary and alternate screens own independent graphics state.
 
-## Ordered goals
+## Compatibility boundaries
 
-1. [x] Add fixtures and protocol-state test infrastructure.
-2. [x] Expose bounded streaming APC callbacks through a pinned `vte` fork and cover termination/cancellation splits.
-3. [x] Add ordered partial parser consumption and deferred transaction barriers.
-4. [x] Implement typed command parsing, direct RGB/RGBA/PNG/zlib transfer, IDs, queries, quotas, Kitty-compatible transport errors, permissive flag values, and smallest-free number IDs.
-5. [x] Implement classic placements, deletion, tracked anchors, scroll/reflow, screen ownership, reset semantics, pixel-offset spans, and the full selector matrix.
-6. [x] Add layered OpenGL image rendering, alpha/crop/scale, tiling, cache eviction, and context recovery.
-7. [x] Add bounded regular-file, temporary-file, and shared-memory transports behind configuration.
-8. [x] Implement Unicode placeholders from authoritative generated combining-mark data, including fit-and-center virtual-box geometry.
-9. [x] Implement relative placement graph semantics. Graph safety, fallback parent selection, and virtual parent placement ID zero pass external scenarios.
-10. [x] Implement animation frame loading, composition, control, deletion, and deadline scheduling, including external root, gap, response, control, overlap, deletion, and excess-data scenarios.
-11. [x] Complete every row in the [protocol conformance requirements](../../docs/kitty-graphics-conformance.md).
-12. [x] Complete stream, default-value, query, quiet-mode, response-identity, and wire-error tests.
-13. [x] Complete the RGB/RGBA/PNG/zlib format matrix, including compressed PNG sizing and remaining valid PNG forms.
-14. [x] Complete direct chunk, file, temporary-file, and POSIX shared-memory behavior and tests. Non-Unix shared-memory transmission returns `ENOTSUP`; Windows KGP shared-memory conformance is not claimed.
-15. [x] Complete image identity, successful replacement, placement replacement, metadata-limit, and stable-accounting tests.
-16. [x] Complete classic crop/scale/offset/clipping, z-order, alpha-overlap, GL-state, texture-cache, and context-recovery framebuffer tests.
-17. [x] Complete placeholder placement-ID, background, sparse-grid, clipping, deletion, and virtual-parent-origin tests.
-18. [x] Complete relative error responses and the full lowercase/uppercase deletion-selector matrix.
-19. [x] Implement and test gapless frames and stop-time loop reset; complete animation canvas, loading, loop, composition, chunking, retransmission, scheduler, and runtime playback scenarios.
-20. [x] Complete RIS, text-erasure, reverse/margin scrolling, placeholder erasure, geometry-query, fuzz-state, repeated-accounting, and always-on performance validation.
-21. [x] Run the complete workspace, application, terminal, reference, VTE, fuzz, framebuffer, benchmark, Lode, and diff checks. The final Linux run passed 235 terminal tests, 84 application tests, 45 reference tests, 58 VTE tests, workspace Clippy, 1,000 instrumented fuzz runs, the expanded framebuffer smoke, and a 125.5 ms mean always-on ordinary-text benchmark. Final animation acceptance used Kitty 0.48.2 `kitten icat` with treemd's 645-frame GIF: four framebuffer captures differed across playback and playback was visible. A 64 MB quota-pressure run kept treemd's software-driven modal animation rendering beyond its previous placeholder failure point; its unique-ID frame churn, slow software encoding, and stale-placeholder reuse remain treemd client behavior rather than native KGP animation behavior.
-22. [x] Re-fetch the complete written specification without distributing it, map every heading and control family to local requirements, and independently audit code, tests, RFC claims, and accepted extensions.
-23. [x] Correct synchronized-update ordering, usage-hint bitmask handling, frame-composition defaults/mode, non-direct `m` handling, explicit zero identifiers, response identity, POSIX shared-memory lifetime order, missing-image response detail, 8-bit ST coverage, and stale conformance claims.
-24. [x] Re-run complete verification after the audit corrections. Fresh evidence passed 243 terminal tests, 84 application tests, 45 reference tests, 62 VTE tests, workspace Clippy with warnings denied, fuzz-crate check, 1,000 sanitizer-instrumented fuzz runs, the full framebuffer smoke, and isolated tmux and Zellij framebuffer tests. A CPU-31 A/B benchmark measured the audited parser at 126.2 ms versus 128.1 ms for the pre-audit branch. Lode structure and diff checks passed.
-25. [x] Preserve virtual placement prototypes through full-screen and margin scrolling. A traced tmux pane/window sequence proved that pane-margin scrolling removed a live prototype while retaining its image and placeholder cells. Focused storage coverage and an isolated framebuffer replay now retain both logos through pane focus and window navigation. Initial incremental tmux output may still require `refresh-client`, and a fresh terminal attachment requires client retransmission because tmux does not retain KGP payloads.
+The vendored `vte` fork provides streaming APC lifecycle callbacks and ordered termination. Keep it pinned until a released upstream version satisfies the exit criteria in the [maintenance architecture](kitty-graphics-maintenance.md).
 
-Each goal stops only after its focused tests, adjacent suites, formatting, linting, docs, and Lode state pass. Commit verified coherent increments separately.
+tmux clients require enabled DCS passthrough. tmux does not retain graphics payloads for a fresh terminal attachment, and initial incremental placeholder output may require `refresh-client`. Zellij 0.45.0 proxies Kitty graphics inside synchronized updates; every completion, timeout, and overflow replay path must preserve deferred barriers before parsing later bytes.
 
-The source-grounded scenario matrix is [Kitty graphics conformance](../../docs/kitty-graphics-conformance.md). Its current oracles are Kitty `77630f3a6748cdf0e3675cc6b768d5dd018a5052`, Ghostty `9f0e1719dc918368367d368bfe300f59bb68b5a4`, and installed Kitty 0.48.2. The protocol remains authoritative. Tests derived from external scenarios use independent fixtures; GPL Kitty test code is not copied.
+Tests derived from external scenarios use independent fixtures; GPL Kitty test code is not copied. The protocol remains the behavioral authority over any individual client implementation.
 
 ## Risks and rollback
 
-Parser changes affect all terminal input. Keep generic APC support isolated and verify existing OSC/DCS/PM/SOS behavior. Grid tracking can corrupt placement lifetime; anchors removed by normal capacity pruning must remove placements rather than clamp, while text-only scrollback erasure preserves detached classic placements without remapping them. Renderer layering can regress text; preserve an empty-state fast path and compare controlled framebuffers. Graphics is always available, so rollback is source-level and remains commit-local by coherent protocol increment.
+Parser changes affect all terminal input, so generic APC support must remain isolated and existing OSC, DCS, PM, and SOS behavior must remain covered. Grid tracking must remove anchors pruned by normal capacity changes without remapping anchors detached by text-only scrollback erasure. Rendering must retain the empty-state fast path and controlled framebuffer coverage for every image stratum.
+
+Graphics is always available. Rollback is source-level and should preserve coherent protocol increments rather than introduce a runtime feature switch.
 
 ## Related Lode
 
 - [Graphics domain](../graphics/summary.md)
+- [Maintenance architecture](kitty-graphics-maintenance.md)
 - [Repository practices](../practices.md)

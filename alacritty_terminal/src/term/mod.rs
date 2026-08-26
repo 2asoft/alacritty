@@ -850,6 +850,7 @@ impl<T> Term<T> {
     where
         T: EventListener,
     {
+        self.graphics.set_visible_lines(self.screen_lines());
         match prepared {
             PreparedGraphics::Command(ProcessedCommand::Decoded { command, image })
                 if command.action == Some(GraphicsAction::TransmitFrame)
@@ -1238,6 +1239,8 @@ impl<T> Term<T> {
             num_lines,
             num_cols,
         );
+        self.graphics.set_visible_lines(num_lines);
+        self.inactive_graphics.set_visible_lines(num_lines);
 
         // Invalidate selection and tabs only when necessary.
         if old_cols != num_cols {
@@ -4098,6 +4101,93 @@ mod tests {
         });
 
         assert!(term.graphics.images().next().is_none());
+    }
+
+    #[test]
+    fn resize_refreshes_visible_range_before_quota_reduction() {
+        let size = TermSize::new(5, 2);
+        let config = Config {
+            graphics: GraphicsConfig { storage_limit: 12, ..Default::default() },
+            ..Default::default()
+        };
+        let mut term = Term::new(config, &size, VoidListener);
+        term.grid = Grid::new(2, 5, 20);
+        term.grid.scroll_up(&(Line(0)..Line(2)), 20);
+        for image_id in 1..=3 {
+            let command = GraphicsCommand { image_id: Some(image_id), ..Default::default() };
+            term.graphics
+                .store(
+                    &command,
+                    crate::graphics::PixelBuffer::from_rgba(
+                        1,
+                        1,
+                        Arc::from([image_id as u8, 0, 0, 255]),
+                    ),
+                )
+                .unwrap();
+            let line = if image_id == 2 { -15 } else { image_id as i32 - 6 };
+            term.graphics.place_for_test(&command, Point::new(Line(line), Column(0))).unwrap();
+        }
+        term.resize(TermSize::new(5, 10));
+        term.set_options(Config {
+            graphics: GraphicsConfig { storage_limit: 8, ..Default::default() },
+            ..Default::default()
+        });
+
+        assert!(term.graphics.image_by_id(NonZeroU32::new(1).unwrap()).is_some());
+        assert!(term.graphics.image_by_id(NonZeroU32::new(2).unwrap()).is_none());
+        assert!(term.graphics.image_by_id(NonZeroU32::new(3).unwrap()).is_some());
+    }
+
+    #[test]
+    fn deferred_frame_commit_refreshes_visible_eviction_range_after_resize() {
+        let size = TermSize::new(5, 2);
+        let config = Config {
+            graphics: GraphicsConfig { storage_limit: 12, ..Default::default() },
+            ..Default::default()
+        };
+        let mut term = Term::new(config, &size, VoidListener);
+        term.commit_graphics_command(ProcessedCommand::Error {
+            command: None,
+            error: GraphicsError::Invalid,
+        });
+        term.resize(TermSize::new(5, 10));
+        for image_id in 1..=3 {
+            term.graphics
+                .store(
+                    &GraphicsCommand { image_id: Some(image_id), ..Default::default() },
+                    crate::graphics::PixelBuffer::from_rgba(
+                        1,
+                        1,
+                        Arc::from([image_id as u8, 0, 0, 255]),
+                    ),
+                )
+                .unwrap();
+        }
+        term.graphics
+            .place_for_test(
+                &GraphicsCommand { image_id: Some(2), ..Default::default() },
+                Point::new(Line(5), Column(0)),
+            )
+            .unwrap();
+        term.graphics
+            .place_for_test(
+                &GraphicsCommand { image_id: Some(3), ..Default::default() },
+                Point::new(Line(-1), Column(0)),
+            )
+            .unwrap();
+
+        commit_processed(&mut term, ProcessedCommand::Decoded {
+            command: GraphicsCommand {
+                action: Some(GraphicsAction::TransmitFrame),
+                image_id: Some(1),
+                ..Default::default()
+            },
+            image: crate::graphics::PixelBuffer::from_rgba(1, 1, Arc::from([9, 0, 0, 255])),
+        });
+
+        assert!(term.graphics.image_by_id(NonZeroU32::new(2).unwrap()).is_some());
+        assert!(term.graphics.image_by_id(NonZeroU32::new(3).unwrap()).is_none());
     }
 
     #[test]
