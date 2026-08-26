@@ -126,6 +126,8 @@ Suggested commit: `perf(renderer): index virtual graphics per frame`
 
 ### Work item 6: Avoid unnecessary cell passes
 
+Status: Complete.
+
 Depends on work item 5 so the final snapshot path receives framebuffer coverage.
 
 1. Add `split_cells` from the middle negative range.

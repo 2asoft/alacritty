@@ -1074,6 +1074,7 @@ impl Display {
         let image_cache_limit = config.terminal.graphics.storage_limit;
         let very_negative_end = graphics.partition_point(|image| image.z_index < i32::MIN / 2);
         let negative_end = graphics.partition_point(|image| image.z_index < 0);
+        let split_cells = very_negative_end < negative_end;
         self.renderer.draw_images(&size_info, &graphics[..very_negative_end], image_cache_limit);
         let mut lines = RenderLines::new();
 
@@ -1094,7 +1095,7 @@ impl Display {
             let vi_highlighted_hint = &self.vi_highlighted_hint;
             let damage_tracker = &mut self.damage_tracker;
 
-            if !graphics.is_empty() {
+            if split_cells {
                 let backgrounds = grid_cells.iter().cloned().map(|mut cell| {
                     cell.character = ' ';
                     cell.flags = Flags::empty();
@@ -1110,7 +1111,7 @@ impl Display {
             }
 
             let cells = grid_cells.into_iter().map(|mut cell| {
-                if !graphics.is_empty() {
+                if split_cells {
                     cell.bg_alpha = 0.;
                 }
                 if rendered_placeholders.contains(&(cell.point.line, cell.point.column.0)) {

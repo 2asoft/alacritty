@@ -5,7 +5,7 @@ for command in cargo sway swaymsg grim magick jq python3; do
     command -v "$command" >/dev/null || { echo "missing required command: $command" >&2; exit 1; }
 done
 
-root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+root=$(CDPATH=; cd -- "$(dirname -- "$0")/.." && pwd)
 output=${1:-"$root/target/kitty-graphics-smoke"}
 runtime="$output/runtime"
 rm -rf "$output"
@@ -22,6 +22,7 @@ cargo build --manifest-path "$root/Cargo.toml" -p alacritty
 
 python3 - "$output/alacritty.toml" <<'PY'
 import base64
+import os
 import sys
 from pathlib import Path
 
@@ -42,7 +43,26 @@ yellow = encoded(255, 255, 0, 255)
 tiled = encoded(*(200, 10, 200, 255) * 4)
 placeholder = "\U0010eeee\u0305"
 client_frame_marker = str(Path(sys.argv[1]).with_name("client-frame-ready"))
-script = (
+scene = os.environ.get("KITTY_SMOKE_PASS_SCENE")
+if scene:
+    scenes = {
+        "none": "printf '\\033[2J\\033[HNO GRAPHICS TEXT'; printf '\\033[3;3H'; sleep 30",
+        "very-negative": (
+            f"printf '\\033_Ga=T,q=2,f=32,s=1,v=1,i=1,c=4,r=2,z=-1073741825,C=1;{very_negative}\\033\\\\'; "
+            "printf '\\033[1;1H\\033[48;2;17;34;51mTEXT\\033[2;1H    \\033[0m'; sleep 30"
+        ),
+        "middle-negative": (
+            f"printf '\\033_Ga=T,q=2,f=32,s=1,v=1,i=1,c=4,r=2,z=-1,C=1;{normal_negative}\\033\\\\'; "
+            "printf '\\033[1;1HMIDDLE NEGATIVE TEXT'; sleep 30"
+        ),
+        "positive": (
+            f"printf '\\033[1;1H\\033_Ga=T,q=2,f=32,s=1,v=1,i=1,c=4,r=2,z=1,C=1;{positive}\\033\\\\'; "
+            "printf '\\033[1;1H'; sleep 30"
+        ),
+    }
+    script = scenes[scene]
+else:
+    script = (
     "printf 'Thin text must remain stable across redraws\\nSecond line 0123456789'; "
     f"printf '\\033_Ga=t,q=2,f=32,s=1,v=1,i=1;{red}\\033\\\\'; "
     "printf '\\033[5;1H\\033_Ga=p,q=2,i=1,c=4,r=4,z=-1,C=1\\033\\\\'; "
@@ -66,7 +86,7 @@ script = (
     "sleep 10; "
     "printf '\\033_Ga=a,q=2,i=9,s=1,c=2\\033\\\\'; "
     f"touch '{client_frame_marker}'; sleep 25"
-)
+    )
 quoted = '"' + script.replace('\\', '\\\\').replace('"', '\\"') + '"'
 Path(sys.argv[1]).write_text(
     '[window]\n'
@@ -131,6 +151,38 @@ done
 for frame in 1 2 3 4; do
     magick "$output/frame-$frame.png" -crop 600x70+0+25 +repage "$output/text-$frame.png"
 done
+
+if [ -n "${KITTY_SMOKE_PASS_SCENE:-}" ]; then
+    case "$KITTY_SMOKE_PASS_SCENE" in
+        none)
+            magick "$output/frame-1.png" -format %c histogram:info:- | grep -q '#D8D8D8 ' || {
+                echo "no-graphics cell pass lost text or cursor" >&2; exit 1;
+            }
+            ;;
+        very-negative)
+            ! magick "$output/frame-1.png" -format %c histogram:info:- | grep -q '#445566 ' || {
+                echo "very-negative image escaped cell backgrounds" >&2; exit 1;
+            }
+            ;;
+        middle-negative)
+            magick "$output/frame-1.png" -format %c histogram:info:- | grep -q '#778899 ' || {
+                echo "middle-negative image was not rendered between cell passes" >&2; exit 1;
+            }
+            ;;
+        positive)
+            histogram=$(magick "$output/frame-1.png" -format %c histogram:info:-)
+            printf '%s\n' "$histogram" | grep -q '#ABCDEF ' || {
+                echo "positive image was not rendered above cells" >&2; exit 1;
+            }
+            printf '%s\n' "$histogram" | grep -q '#D8D8D8 ' || {
+                echo "cursor was not rendered above the positive image" >&2; exit 1;
+            }
+            ;;
+    esac
+    printf 'Kitty graphics %s cell-pass smoke test passed. Screenshot: %s/frame-1.png\n' \
+        "$KITTY_SMOKE_PASS_SCENE" "$output"
+    exit 0
+fi
 
 wait_animation_state() {
     expected=$1
