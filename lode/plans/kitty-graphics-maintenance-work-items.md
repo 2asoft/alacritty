@@ -161,6 +161,8 @@ Suggested commit: `refactor(graphics): narrow deferred protocol APIs`
 
 ### Work item 8: Reconcile permanent documentation
 
+Status: Complete.
+
 Depends on all code work.
 
 1. Replace Windows named shared-memory claims with POSIX support and non-Unix `ENOTSUP` policy.

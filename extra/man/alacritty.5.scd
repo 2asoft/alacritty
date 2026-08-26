@@ -638,7 +638,8 @@ Windows: _"powershell"_
 	*local_transmission* = _true_ | _false_
 
 		Allow graphics commands to read regular files, temporary files, and shared
-		memory from the host. Direct transfers are unaffected.
+		memory from the host. Shared-memory transmission uses POSIX shared memory
+		on Unix; non-Unix hosts return _ENOTSUP_. Direct transfers are unaffected.
 
 		Default: _true_
 

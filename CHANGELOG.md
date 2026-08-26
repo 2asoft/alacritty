@@ -19,6 +19,10 @@ Notable changes to the `alacritty_terminal` crate are documented in its
 
 - Native Kitty graphics protocol support, including classic, Unicode placeholder, relative, and animated images, with virtual prototypes retained through terminal scrolling
 
+### Changed
+
+- Reduced Kitty graphics terminal-lock time, chunk upload memory, placeholder snapshot scaling, and ordinary render passes
+
 ### Fixed
 
 - Kitty graphics rendering through Zellij synchronized updates

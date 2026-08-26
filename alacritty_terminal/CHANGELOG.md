@@ -14,6 +14,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 - Native Kitty graphics parsing, bounded image decoding and transports, placements, animation, storage, ordered protocol responses, and scroll-independent virtual prototypes
 
+### Changed
+
+- Stream Kitty graphics chunks and prepare animation frames outside the terminal mutex
+- Resolve Kitty graphics placeholders through one frame-local terminal snapshot index
+
 ### Fixed
 
 - Kitty graphics command ordering inside synchronized terminal updates

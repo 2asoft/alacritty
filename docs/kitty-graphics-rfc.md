@@ -465,12 +465,12 @@ ansi::Processor / Kitty APC parser
 `alacritty_terminal::ansi`:
 
 - identifies Kitty APCs;
-- parses bounded control fields;
-- maintains direct-transfer chunk state;
-- converts completed commands into terminal operations or deferred requests.
+- parses bounded control fields and transfers payload ownership;
+- stops at completed Kitty command barriers.
 
 `alacritty_terminal::graphics`:
 
+- owns direct-transfer chunk state and deferred processing;
 - owns protocol semantics;
 - owns canonical image/frame data;
 - owns IDs and placements;
@@ -661,21 +661,7 @@ The implementation MUST NOT submit image decode jobs to an unordered worker pool
 
 `ansi::Processor::advance` gains an execution mode capable of returning before all supplied PTY bytes are consumed.
 
-Conceptually:
-
-```rust
-enum AdvanceResult {
-    Complete {
-        consumed: usize,
-    },
-    Deferred {
-        consumed: usize,
-        request: DeferredGraphicsRequest,
-    },
-}
-```
-
-Exact API shape is implementation-defined.
+`Processor::advance_until_terminated` returns the consumed byte count and stops when `Term` records a graphics barrier. `Term::take_deferred_graphics` then returns `Option<DeferredGraphics>`. The event loop retains the unconsumed suffix until `process_deferred_graphics` finishes every continuation.
 
 A deferred graphics request is a barrier:
 
@@ -743,18 +729,21 @@ An ordered worker pipeline is future optimization.
 
 A heavyweight command is represented by an immutable request containing everything needed to perform transport/decode without consulting mutable terminal state.
 
-Processing produces:
+Processing uses the final internal state machine:
 
 ```rust
-enum DecodedGraphicsResult {
-    Image(DecodedImage),
-    Frame(DecodedFrame),
-    QueryResult(...),
-    Error(GraphicsError),
+enum DeferredGraphics {
+    Decode(DecodeWork),
+    Compose(FrameWork),
+}
+
+enum PreparedGraphics {
+    Command(ProcessedCommand),
+    Frame(PreparedFrameMutation),
 }
 ```
 
-Commit occurs under terminal lock.
+`DeferredGraphics::process` runs without terminal state. `Term::commit_deferred_graphics` commits under the terminal lock or returns the next off-lock composition continuation.
 
 The commit MUST either:
 
@@ -791,10 +780,8 @@ pub struct GraphicsState {
     named_placements:
         HashMap<(NonZeroU32, NonZeroU32), PlacementHandle>,
 
-    pending: Option<PendingTransmission>,
-
     used_bytes: usize,
-    reserved_bytes: usize,
+    frame_count: usize,
     storage_limit: usize,
 
     generation: u64,
@@ -866,7 +853,7 @@ Conceptually:
 struct PixelBuffer {
     width: u32,
     height: u32,
-    bytes: Arc<[u8]>,
+    bytes: Arc<Vec<u8>>,
 }
 ```
 
@@ -1038,7 +1025,7 @@ On POSIX systems:
 4. unlink according to protocol lifetime semantics;
 5. close mapping/descriptor.
 
-Equivalent platform-native behavior is used where shared-memory APIs differ.
+Shared-memory transmission is a POSIX feature in this implementation. Non-Unix hosts return `ENOTSUP`; Alacritty does not implement or claim conformance for Windows named shared memory.
 
 ### Offset and size
 
@@ -1104,19 +1091,19 @@ Conceptually:
 
 ```rust
 struct PendingTransmission {
-    command: TransmissionHeader,
-    encoded: Vec<u8>,
-    pending_anchor: Option<TrackedAnchor>,
+    command: Command,
+    chunks: Vec<Vec<u8>>,
+    encoded_bytes: usize,
 }
 ```
 
-Actual implementation SHOULD decode base64 incrementally rather than retaining a second complete encoded copy when possible.
+The final chunk completion point is captured separately in `Term::deferred_graphics_anchor`. `EncodedReader` streams the chunk vectors through base64 without concatenating a second complete encoded copy.
 
 ### Interleaving
 
 A new incompatible graphics operation encountered while a chunked transfer is incomplete is handled according to protocol requirements rather than silently merging state.
 
-Deletion that aborts an incomplete transfer clears pending encoded storage and its tracked anchor.
+Deletion that aborts an incomplete transfer clears pending encoded storage. Incomplete transfers do not create a tracked anchor.
 
 ### Failure
 
@@ -1138,12 +1125,11 @@ Successful retransmission with the same ID performs atomic replacement.
 
 Replacement behavior:
 
-1. decode new image completely;
-2. reserve required memory;
-3. validate complete operation;
-4. atomically remove old image/affected placements according to protocol;
-5. install new image;
-6. create requested new placement, if any.
+1. decode the new image completely within the per-stage working bounds;
+2. validate the complete operation and commit-time quota;
+3. atomically remove the old image and affected placements according to protocol;
+4. install the new image;
+5. create the requested new placement, if any.
 
 If any precommit step fails, old state remains unchanged.
 
@@ -1180,8 +1166,9 @@ struct Placement {
 
     pixel_offset: PixelOffset,
 
-    columns: u32,
-    rows: u32,
+    columns: Option<u32>,
+    rows: Option<u32>,
+    cell_span: (u32, u32),
 
     z_index: i32,
 
@@ -1213,6 +1200,10 @@ Ordinary direct placements are independent terminal state.
 Virtual placements are prototypes for Unicode placeholder rendering.
 
 Relative placements resolve through another placement.
+
+Classic placements retain optional `c/r` axes; zero means omitted. Native sizing preserves source pixels. One explicit axis scales the other to preserve aspect. Pixel offsets reduce an explicit destination extent so its far edge remains on the requested cell boundary. The separate `cell_span` supports cursor movement, clipping, and deletion and refreshes when cell metrics change.
+
+Global source coordinates and fractional placeholder samples retain `f64` precision. Tile intersection uses offsets from the source origin and keeps extents separate, preserving narrow crops beyond `2^24` and tiny source fractions that cover visible destination cells. The renderer converts offsets from the upload origin to `f32` for GPU texture coordinates.
 
 ### Why placements are not stored inside cells
 
@@ -1748,11 +1739,7 @@ Deleting while iterating hash maps MUST NOT produce order-dependent behavior.
 
 ### Pending transmission
 
-Deletion semantics that abort an in-progress transmission clear:
-
-- decoder/chunk state;
-- reserved memory;
-- pending tracked anchor.
+Deletion semantics that abort an in-progress transmission clear its pending chunk vectors. No decoder or placement anchor exists until a request completes.
 
 ---
 
@@ -1820,7 +1807,7 @@ Conceptually:
 
 ```rust
 struct Frame {
-    pixels: Arc<[u8]>,
+    pixels: PixelBuffer,
     width: u32,
     height: u32,
     gap: FrameGap,
@@ -1850,11 +1837,11 @@ An omitted or zero `w` or `h` means the full image width or height, not the rema
 
 Frame composition:
 
-1. validates source/destination frames;
-2. validates rectangles;
-3. rejects invalid self-overlap where required;
-4. reserves required storage;
-5. materializes resulting destination pixels;
+1. validates source and destination frames under the terminal lock;
+2. snapshots immutable pixel handles and the structural frame revision;
+3. validates rectangles and rejects invalid self-overlap;
+4. materializes destination pixels outside the terminal lock;
+5. revalidates the target revision, frame count, and quota;
 6. commits atomically.
 
 Memory failure leaves original frame state unchanged.
@@ -1938,31 +1925,21 @@ Quota accounting includes:
 - canonical animation frame pixels;
 - buffers equivalent to retained image content.
 
-One deferred decode working buffer is separately bounded by the configured quota. It allows a validated new image to reach the atomic commit that evicts old data. Temporary decode scratch SHOULD be minimized and separately bounded so peak memory cannot exceed canonical storage plus one quota-sized decode buffer and bounded decoder overhead.
+Working allocations have separate stage bounds. A frame edit can hold both a decoded source and a destination copy while the old retained frame remains alive. The implementation preserves supported full-size edits and removes redundant complete pixel copies. It does not impose one aggregate working quota. See [resource bounds](kitty-graphics-resources.md) for the allocation contract and combined-peak fixtures.
 
 ### Not counted
 
-GPU textures are renderer cache and not counted against terminal CPU quota.
+Encoded input, temporary source/decoder/canvas allocations, metadata, and older pixels held by a renderer snapshot are outside retained-state accounting. GPU textures have a separate renderer cache and eviction policy.
 
-They have their own renderer-side eviction policy.
+### Deferred working bounds
 
-### Reservation
-
-Before decoding or allocating potentially large canonical content, the terminal reserves expected storage.
-
-Conceptually:
-
-```rust
-fn reserve(&mut self, bytes: usize) -> Result<Reservation, GraphicsError>;
-```
-
-Dropping an uncommitted `Reservation` returns it automatically.
+Before decoding, the terminal derives checked stage limits from the screen quota and command format. Direct input coalesces into bounded blocks and streams into a decoded vector with an explicit capacity ceiling. Frame preparation snapshots immutable pixel owners under lock, allocates and composes off-lock, then revalidates image handle, frame revision, frame count, and quota at atomic commit. A uniquely owned canvas transfers its allocation into the result; a shared retained canvas is copied once.
 
 ### Replacement
 
 Replacing image ID `i` must preserve old content until new content validates.
 
-Quota accounting MAY credit the old image's eventual reclaimed size when determining whether atomic replacement can succeed, but must retain enough actual memory to avoid unsafe overcommit.
+Quota accounting MAY credit the old image's eventual reclaimed size when determining whether atomic replacement can succeed. It MUST recompute that credit after eviction cascades, since a parent eviction can already have removed the replacement target. Both plain replacement and transmit-and-place commit transactionally.
 
 If safe replacement cannot be performed, return `ENOSPC` and preserve old state.
 
@@ -2088,7 +2065,7 @@ Only textures can be evicted; canonical terminal images remain until terminal gr
 
 GPU operations MUST occur without `Term`'s mutex.
 
-Current Alacritty already builds renderable state under lock and performs renderer work afterwards. Graphics preserve this model.
+Alacritty builds one terminal-owned graphics snapshot under lock and performs renderer work afterwards. The snapshot builds one virtual-prototype index. It scans only the viewport for ordinary placeholders and scans retained history once only when a classic relative chain requires a virtual root.
 
 Conceptually:
 
@@ -2117,7 +2094,7 @@ When lock is released, the renderer may upload textures from immutable buffers s
 
 ## 33. Rendering placeholder cells
 
-Visible terminal cells are scanned as they already are for text rendering.
+Visible terminal cells are scanned once by `Term::graphics_render_snapshot`. The application consumes resolved placeholder tiles and suppression points without rescanning terminal cells or placements.
 
 When a cell contains the placeholder code point:
 
@@ -2399,10 +2376,10 @@ At most one internal placement corresponds to a nonzero external `(image_id, pla
 ### Quota
 
 ```text
-used_bytes + reserved_bytes <= effective_limit
+used_bytes <= storage_limit
 ```
 
-except transient bounded decoder scratch explicitly excluded by policy.
+One in-flight decoded buffer may separately use up to `storage_limit`, plus bounded decoder scratch. It is not retained in `GraphicsState` before commit.
 
 ### Anchor validity
 
@@ -3486,7 +3463,10 @@ alacritty_terminal/
     │   │   Kitty control/payload parser
     │   │
     │   ├── transaction.rs
-    │   │   chunk assembly/deferred requests
+    │   │   chunk ownership/deferred requests
+    │   │
+    │   ├── deferred.rs
+    │   │   off-lock decode/composition state machine
     │   │
     │   ├── transport.rs
     │   │   direct/file/temp/shm
@@ -3507,7 +3487,7 @@ alacritty_terminal/
     │   │   frames/control/composition
     │   │
     │   └── storage.rs
-    │       quotas/reservations/eviction
+    │       quotas/frame snapshots/atomic commit/eviction
     │
     ├── grid/
     │   tracked-point reflow support
@@ -3558,7 +3538,7 @@ parser barrier
     decode PNG
        │
        ▼
-   reserve storage
+   prepare pixels
        │
        ▼
  reacquire Term lock
@@ -3703,7 +3683,7 @@ The feature is complete only when every row in [the Kitty graphics conformance r
 
 1. every current action, key, default, response, quiet level, error identity, and parser boundary has a wire-level test;
 2. RGB, RGBA, every valid PNG form, and zlib for each format have bounded success and failure tests;
-3. direct chunks, regular files, constrained temporary files, POSIX shared memory, and non-Unix shared-memory rejection have lifecycle and range tests;
+3. direct chunks, regular files, constrained temporary files, and POSIX shared memory have lifecycle and range tests; non-Unix shared-memory rejection remains an explicit `ENOTSUP` policy;
 4. queries validate without mutation and remain ordered before later terminal responses;
 5. image IDs, image numbers, placement IDs, successful replacement, failed atomic replacement, and generated responses are correct;
 6. classic crop, scale, offset, clipping, cursor movement, scroll, reverse scroll, margins, history, and primary-buffer reflow are correct;

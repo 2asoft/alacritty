@@ -1,6 +1,6 @@
 # Kitty graphics conformance requirements
 
-This matrix defines the protocol-observable tests required for complete Kitty graphics protocol support. A requirement is complete only when a test exercises the responsible public or wire boundary. Implementation inspection alone does not count as coverage.
+This matrix tracks protocol requirements and their test evidence. Covered entries refer to exercised scenarios at the responsible public or wire boundary; they do not establish every combination of controls and state. Implementation inspection alone does not count as test coverage. Remaining coverage gaps are identified below.
 
 ## Oracles
 
@@ -77,7 +77,7 @@ The audit also inventories every production call into the VTE parser. Normal inp
 | Requirement | Status |
 | --- | --- |
 | Direct transmission supports complete and chunked RGB, RGBA, PNG, and zlib payloads | Covered |
-| Non-final chunks have valid base64 boundaries, padded and unpadded base64 are accepted, and total assembled data remains bounded | Covered |
+| Non-final chunks have valid base64 boundaries, padded and unpadded base64 are accepted, and total encoded data remains bounded without concatenating a second encoded body | Covered |
 | Final-chunk cursor position anchors transmit-and-place | Covered |
 | Any delete command aborts an incomplete upload, and the next upload starts cleanly | Covered |
 | Chunk success, decode failure, continuation failure, and changing quiet levels preserve initial request identity | Covered |
@@ -101,7 +101,8 @@ The audit also inventories every production call into the VTE parser. Normal inp
 | Failed or incomplete replacement preserves the old image and placements atomically | Covered, policy extension |
 | Same nonzero `(i,p)` replaces a placement without duplication or flicker | Covered |
 | `p` is ignored for image ID zero; repeated zero placement IDs remain independent | Covered |
-| Canonical image bytes, animation bytes, image count, placement count, and frame count stay within storage quota; one deferred decode working buffer is separately bounded by the same limit | Covered |
+| Canonical image and animation bytes stay within the per-screen storage quota; metadata has separate count limits and processing stages have separate working bounds | Covered by quota/transaction tests and the allocation fixtures; see resource bounds |
+| Animation canvas allocation, pixel copying, and composition run outside the terminal mutex; stale revisions and quota changes fail atomically at commit | Covered |
 | Usage hint `N` is parsed as a bitmask; eviction recognizes its transient bit and prioritizes transient, unplaced, and non-visible images | Covered |
 | Frame-level transient hints are accepted but intentionally ignored because frames share canonical in-memory image ownership | Policy |
 | Usage hints on placement commands do not mutate stored image policy | Covered |
@@ -109,6 +110,8 @@ The audit also inventories every production call into the VTE parser. Normal inp
 | Repeated upload/delete and replacement restore all tracked byte and object accounting | Covered |
 
 ## Classic placement and rendering
+
+The terminal render snapshot indexes virtual prototypes once per frame. It scans only the viewport for ordinary placeholders and scans retained history only for classic relative chains with virtual roots. The renderer splits cell backgrounds from glyphs only when the middle negative-z stratum requires it.
 
 | Requirement | Status |
 | --- | --- |
@@ -124,7 +127,7 @@ The audit also inventories every production call into the VTE parser. Normal inp
 | Overlapping translucent classic placements produce source-over framebuffer output | Covered |
 | Every image pass restores shared OpenGL bindings and state used by later text and rectangle passes | Covered |
 | Oversized textures tile with overlap, cache accounting is bounded, LRU eviction is deterministic, and transient tiles do not enter the cache | Covered |
-| Destroying every GPU texture or recreating the context reconstructs the same framebuffer from CPU state | Covered |
+| Destroying every GPU texture or recreating the context reconstructs the same framebuffer from CPU state | Texture discard covered; complete GL context recreation is untested |
 
 ## Unicode placeholders
 
@@ -199,10 +202,10 @@ The audit also inventories every production call into the VTE parser. Normal inp
 
 | Requirement | Status |
 | --- | --- |
-| Stateful fuzzing covers parser splits, synchronized replay and timeout, chunk transactions, decoders, state operations, grid movement, reset, and cancellation | Covered |
+| Stateful fuzzing covers parser splits, synchronized replay, chunk transactions, decoders, state operations, grid movement, reset, and cancellation | Covered; wall-clock timeout requires separate tests |
 | Random state tests assert image/placement/index/quota/graph invariants after every operation | Covered |
-| Framebuffer smoke covers all z strata, crop/scale/offset, alpha overlap, placeholders, animation, texture eviction, and context reconstruction | Covered |
-| Ordinary non-graphics workloads show no material parser, memory, or redraw regression with always-on support | Covered |
+| Framebuffer checks cover z strata, crop/scale/offset, alpha overlap, placeholders, animation, and texture eviction/reconstruction | Covered; complete GL context recreation is untested |
+| Ordinary non-graphics workloads show no material parser, memory, or redraw regression with always-on support | Partial: parser timing and empty-snapshot tests exist; comparative memory/redraw thresholds are not established |
 
 ## Runtime fixtures
 
@@ -214,11 +217,33 @@ The audit also inventories every production call into the VTE parser. Normal inp
 - overlapping translucent images use source-over composition;
 - transparent Unicode placeholders expose their cell background without exposing the placeholder glyph;
 - automatic animation and client-selected frames both reach the framebuffer;
-- Kitty 0.48.2 `kitten icat` loads and plays a 645-frame GIF using 128 KiB chunks and unpadded base64;
 - animation transitions damage their placement and trigger visible redraws;
 - texture eviction stays within the configured byte limit;
 - discarded image textures reconstruct from canonical CPU pixels;
 - image passes leave later text rendering stable.
+
+`scripts/kitty-graphics-geometry.sh` additionally checks exact color counts at padding 0 and 40 for native pixel sizes, single-axis aspect scaling, explicit spans with pixel offsets, negative-z placement, enlarged fractional placeholder tiles, tiny sampling extents at source coordinates beyond `2^24`, and CPU-composed alpha.
+
+The smoke script does not run `kitten icat` or the previously reported 645-frame GIF. That real-client observation is not automated coverage in this repository.
+
+## Regression evidence
+
+| Contract | Executable evidence |
+| --- | --- |
+| Empty continuations consume no block metadata; small chunks coalesce | `graphics::transaction::tests::empty_and_small_continuations_bound_metadata_by_encoded_bytes` |
+| Replacement rollback includes parent-eviction cascades | `graphics::storage::tests::replacement_accounts_for_parent_eviction_and_preserves_state_on_failure` |
+| Large spans and relative offsets remain safe during deletion | `term::tests::graphics_protocol::large_rows_and_relative_offsets_do_not_overflow_deletion` |
+| Padding preserves image coordinates | `scripts/kitty-graphics-geometry.sh`, padding 0/40 |
+| Native dimensions survive font changes; footprints refresh in both buffers | `term::tests::graphics_protocol::native_sizing_survives_font_changes_and_updates_its_footprint`; `term::tests::font_changes_refresh_native_footprints_in_both_buffers`; geometry fixture |
+| Native footprints protect partially visible images during eviction | `graphics::storage::tests::native_footprint_visibility_protects_partially_scrolled_image` |
+| Inferred spans widen large pixel offsets before scaling | `graphics::storage::tests::inferred_placement_spans_widen_pixel_offsets_before_scaling` |
+| Fractional placeholder sampling preserves every tile | Display geometry tests, renderer source-crop tests, geometry fixture |
+| CPU alpha preserves white and composes the expected framebuffer | `graphics::animation::tests::white_over_white_remains_white_for_every_alpha`; geometry fixture |
+| Omitted placement IDs resolve the correct virtual prototype and independent origin minima | `term::tests::graphics_protocol::virtual_parent_origin_uses_the_resolved_prototype` |
+| Location deletion follows current placeholder origins | `term::tests::graphics_protocol::virtual_rooted_deletion_ignores_the_creation_cursor` |
+| Finite and all-gapless animation avoid publishing a hidden frame or polling indefinitely | Storage finite, initial-gapless, and all-gapless tests |
+| Working stages preserve ownership and obey fixture allocation thresholds | `scripts/kitty-graphics-memory.sh`; pixel/canvas ownership tests; [resource bounds](kitty-graphics-resources.md) |
+| Self-parent replacement reports `ECYCLE` and preserves state | `term::tests::graphics_protocol::self_parent_returns_cycle_and_preserves_the_placement` |
 
 ## Multiplexer interoperability
 
